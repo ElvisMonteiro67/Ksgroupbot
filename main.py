@@ -52,6 +52,32 @@ def get_db_connection():
         logger.error(f"Erro ao conectar ao banco de dados: {e}")
         raise
 
+# Verifica e atualiza a estrutura do banco de dados
+def check_and_update_db_structure():
+    """Verifica e atualiza a estrutura do banco de dados se necessário."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Verifica se a coluna username existe na tabela bot_admins
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='bot_admins' AND column_name='username'
+        """)
+        if not cur.fetchone():
+            # Adiciona as colunas faltantes
+            cur.execute("ALTER TABLE bot_admins ADD COLUMN username VARCHAR(255)")
+            cur.execute("ALTER TABLE bot_admins ADD COLUMN full_name VARCHAR(255)")
+            conn.commit()
+            logger.info("Estrutura da tabela bot_admins atualizada com sucesso.")
+            
+    except Exception as e:
+        logger.error(f"Erro ao verificar estrutura do banco: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+
 # Inicialização do banco de dados
 def init_db():
     """Cria as tabelas necessárias no banco de dados."""
@@ -97,9 +123,16 @@ def init_db():
         conn = get_db_connection()
         cur = conn.cursor()
         for command in commands:
-            cur.execute(command)
+            try:
+                cur.execute(command)
+            except Exception as e:
+                logger.error(f"Erro ao executar comando SQL: {e}")
         cur.close()
         conn.commit()
+        
+        # Verifica e atualiza a estrutura se necessário
+        check_and_update_db_structure()
+        
     except Exception as e:
         logger.error(f"Erro ao inicializar banco de dados: {e}")
     finally:
@@ -127,7 +160,9 @@ def add_bot_admin(user_id: int, username: str, full_name: str) -> bool:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO bot_admins (user_id, username, full_name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            """INSERT INTO bot_admins (user_id, username, full_name) 
+            VALUES (%s, %s, %s) ON CONFLICT (user_id) 
+            DO UPDATE SET username = EXCLUDED.username, full_name = EXCLUDED.full_name""",
             (user_id, username, full_name)
         )
         conn.commit()
@@ -265,7 +300,9 @@ def start(update: Update, context: CallbackContext) -> None:
                 [InlineKeyboardButton("Adicionar Verificada", callback_data='admin_add_verified')],
                 [InlineKeyboardButton("Remover Verificada", callback_data='admin_remove_verified')],
                 [InlineKeyboardButton("Adicionar Admin Grupo", callback_data='admin_add_group_admin')],
-                [InlineKeyboardButton("Remover Admin Grupo", callback_data='admin_remove_group_admin')]
+                [InlineKeyboardButton("Remover Admin Grupo", callback_data='admin_remove_group_admin')],
+                [InlineKeyboardButton("Listar Verificadas", callback_data='admin_list_verified')],
+                [InlineKeyboardButton("Listar Admins Grupo", callback_data='admin_list_group_admins')]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -376,6 +413,18 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "/removegroupadmin @username -100987654321"
         )
         query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_list_verified':
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Use o comando /listverified para ver a lista de contas verificadas."
+        )
+    
+    elif query.data == 'admin_list_group_admins':
+        context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Use o comando /listgroupadmins para ver a lista de administradores de grupo."
+        )
 
 def add_verified_command(update: Update, context: CallbackContext) -> None:
     """Adiciona um usuário à lista de verificados."""
@@ -535,7 +584,8 @@ def list_verified_command(update: Update, context: CallbackContext) -> None:
 
         response = ["✅ Lista de usuários verificados:\n"]
         for user_id, username, full_name in verified_users:
-            response.append(f"- {full_name} (@{username}) - ID: {user_id}")
+            username_display = f"@{username}" if username else "(sem username)"
+            response.append(f"- {full_name} ({username_display}) - ID: {user_id}")
         
         update.message.reply_text("\n".join(response))
     except Exception as e:
@@ -563,7 +613,8 @@ def list_group_admins_command(update: Update, context: CallbackContext) -> None:
 
         response = ["👑 Lista de administradores de grupo:\n"]
         for user_id, chat_id, username, full_name in group_admins:
-            response.append(f"- {full_name} (@{username}) - ID: {user_id} no grupo {chat_id}")
+            username_display = f"@{username}" if username else "(sem username)"
+            response.append(f"- {full_name} ({username_display}) - ID: {user_id} no grupo {chat_id}")
         
         update.message.reply_text("\n".join(response))
     except Exception as e:
@@ -708,26 +759,38 @@ def main() -> None:
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        
         for admin_id in admin_ids:
             if admin_id.strip().isdigit():
                 admin_id_int = int(admin_id.strip())
-                # Obtém informações do admin
                 try:
-                    updater = Updater(token)
-                    user = updater.bot.get_chat(admin_id_int)
-                    cur.execute(
-                        "INSERT INTO bot_admins (user_id, username, full_name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                        (admin_id_int, user.username, user.full_name)
-                    )
+                    # Cria uma instância temporária do bot para obter informações
+                    temp_bot = Bot(token=token)
+                    try:
+                        user = temp_bot.get_chat(admin_id_int)
+                        username = user.username if user.username else ''
+                        full_name = user.full_name if user.full_name else ''
+                        
+                        cur.execute(
+                            """INSERT INTO bot_admins (user_id, username, full_name) 
+                            VALUES (%s, %s, %s) ON CONFLICT (user_id) 
+                            DO UPDATE SET username = EXCLUDED.username, full_name = EXCLUDED.full_name""",
+                            (admin_id_int, username, full_name)
+                        )
+                    except TelegramError as e:
+                        logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
+                        # Insere apenas o ID se não conseguir obter informações
+                        cur.execute(
+                            "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                            (admin_id_int,)
+                        )
                 except Exception as e:
-                    logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
-                    cur.execute(
-                        "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-                        (admin_id_int,)
-                    )
+                    logger.error(f"Erro ao configurar admin {admin_id}: {e}")
+        
         conn.commit()
     except Exception as e:
         logger.error(f"Erro ao configurar admins do bot: {e}")
+        # Tenta continuar mesmo com erro na configuração dos admins
     finally:
         if conn is not None:
             conn.close()
