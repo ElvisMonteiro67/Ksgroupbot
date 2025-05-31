@@ -1,7 +1,6 @@
 import os
 import logging
 import json
-from typing import Dict, Optional
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -23,7 +22,7 @@ from telegram.ext import (
 )
 from config import TOKEN, ADMIN_IDS, BOT_CONFIG, DATABASE, RENDER_CONFIG, SECURITY
 
-# Configuração de logs
+# Configuração de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -31,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Estados da conversação
-CONFIGURANDO_MENSAGEM, CONFIGURANDO_REGRAS = range(2)
+CONFIGURANDO_MENSAGEM = 1
 
 # Carregar dados
 def carregar_dados(arquivo: str) -> Dict:
@@ -75,13 +74,19 @@ def deletar_mensagem(update: Update):
     except Exception as e:
         logger.warning(f"Não foi possível deletar mensagem: {e}")
 
+# Handler de erros global
+def tratar_erro(update: Update, context: CallbackContext):
+    logger.error(f"Erro durante a operação: {context.error}")
+    if update and update.effective_message:
+        update.effective_message.reply_text("❌ Ocorreu um erro. Tente novamente mais tarde.")
+
 # Comandos administrativos
 def advertir_usuario(update: Update, context: CallbackContext):
     if not eh_admin(update, context):
         return
     
     if not update.message.reply_to_message:
-        update.message.reply_text("Responda a mensagem do usuário para advertir")
+        update.message.reply_text("⚠️ Responda a mensagem do usuário para advertir")
         return
     
     alvo = update.message.reply_to_message.from_user
@@ -92,63 +97,10 @@ def advertir_usuario(update: Update, context: CallbackContext):
     )
     deletar_mensagem(update)
 
-def silenciar_usuario(update: Update, context: CallbackContext):
-    if not eh_admin(update, context):
-        return
-    
-    if not update.message.reply_to_message:
-        update.message.reply_text("Responda a mensagem do usuário para silenciar")
-        return
-    
-    alvo = update.message.reply_to_message.from_user
-    try:
-        context.bot.restrict_chat_member(
-            chat_id=update.effective_chat.id,
-            user_id=alvo.id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_media_messages=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False
-            )
-        )
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"🔇 {alvo.mention_html()} foi silenciado(a)",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"Erro ao silenciar: {e}")
-    deletar_mensagem(update)
-
-def banir_usuario(update: Update, context: CallbackContext):
-    if not eh_admin(update, context):
-        return
-    
-    if not update.message.reply_to_message:
-        update.message.reply_text("Responda a mensagem do usuário para banir")
-        return
-    
-    alvo = update.message.reply_to_message.from_user
-    try:
-        context.bot.ban_chat_member(
-            chat_id=update.effective_chat.id,
-            user_id=alvo.id
-        )
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"🚫 {alvo.mention_html()} foi banido(a)",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"Erro ao banir: {e}")
-    deletar_mensagem(update)
-
-# Mensagem de boas-vindas
 def enviar_boas_vindas(update: Update, context: CallbackContext):
     for novo_membro in update.message.new_chat_members:
         chat_id = str(update.effective_chat.id)
-        mensagem = mensagens_boas_vindas.get(chat_id, BOT_CONFIG['DEFAULT_WELCOME']).format(
+        mensagem = mensagens_boas_vindas.get(chat_id, BOT_CONFIG['MENSAGEM_BOAS_VINDAS']).format(
             nome=novo_membro.full_name,
             usuario=f"@{novo_membro.username}" if novo_membro.username else "",
             id=novo_membro.id
@@ -156,7 +108,7 @@ def enviar_boas_vindas(update: Update, context: CallbackContext):
         
         botoes = [
             InlineKeyboardButton("📜 Regras", callback_data="regras"),
-            InlineKeyboardButton("📢 Canal", url="https://t.me/seucanal")
+            InlineKeyboardButton("📢 Canal", url="https://t.me/KScanal")
         ]
         
         context.bot.send_message(
@@ -173,13 +125,12 @@ def painel_controle(update: Update, context: CallbackContext):
     
     teclado = [
         [InlineKeyboardButton("👋 Configurar Boas-vindas", callback_data="config_boas_vindas")],
-        [InlineKeyboardButton("⚙️ Configurações do Grupo", callback_data="config_grupo")],
-        [InlineKeyboardButton("🛡️ Gerenciar Usuários", callback_data="gerenciar_usuarios")]
+        [InlineKeyboardButton("⚙️ Configurações", callback_data="config_grupo")]
     ]
     
     update.message.reply_text(
-        "🛠 *Painel de Controle do Bot* 🛠\n\n"
-        "Escolha uma opção abaixo para configurar:",
+        "🛠 *Painel de Controle* 🛠\n\n"
+        "Escolha uma opção:",
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode=ParseMode.MARKDOWN
     )
@@ -188,13 +139,8 @@ def configurar_boas_vindas(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
     query.edit_message_text(
-        "✍️ *Configurar Mensagem de Boas-vindas*\n\n"
-        "Envie a nova mensagem. Você pode usar:\n"
-        "- `{nome}`: Nome do usuário\n"
-        "- `{usuario}`: @username\n"
-        "- `{id}`: ID do usuário\n\n"
-        "Exemplo:\n"
-        "`Olá {nome}! Bem-vindo ao nosso grupo!`",
+        "✍️ Digite a nova mensagem de boas-vindas:\n"
+        "Use {nome}, {usuario} ou {id} como variáveis",
         parse_mode=ParseMode.MARKDOWN
     )
     return CONFIGURANDO_MENSAGEM
@@ -202,7 +148,7 @@ def configurar_boas_vindas(update: Update, context: CallbackContext):
 def salvar_boas_vindas(update: Update, context: CallbackContext):
     mensagens_boas_vindas[str(update.effective_chat.id)] = update.message.text
     salvar_dados(DATABASE['WELCOME_MSG_FILE'], mensagens_boas_vindas)
-    update.message.reply_text("✅ Mensagem de boas-vindas salva com sucesso!")
+    update.message.reply_text("✅ Mensagem salva com sucesso!")
     return ConversationHandler.END
 
 # Função principal
@@ -210,24 +156,26 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Configuração para Render
-    if RENDER_CONFIG['WEBHOOK_URL']:
+    # Registrar handler de erros
+    dp.add_error_handler(tratar_erro)
+
+    # Configurar webhook no Render
+    if RENDER_CONFIG['URL_WEBHOOK']:
         updater.start_webhook(
             listen=RENDER_CONFIG['HOST'],
-            port=RENDER_CONFIG['PORT'],
+            port=RENDER_CONFIG['PORTA'],
             url_path=TOKEN,
-            webhook_url=f"{RENDER_CONFIG['WEBHOOK_URL']}/{TOKEN}"
+            webhook_url=f"{RENDER_CONFIG['URL_WEBHOOK']}/{TOKEN}",
+            drop_pending_updates=True
         )
     else:
-        updater.start_polling()
+        updater.start_polling(drop_pending_updates=True)
 
     # Handlers de comandos
     dp.add_handler(CommandHandler("start", painel_controle))
     dp.add_handler(CommandHandler("advertir", advertir_usuario))
-    dp.add_handler(CommandHandler("silenciar", silenciar_usuario))
-    dp.add_handler(CommandHandler("banir", banir_usuario))
     
-    # Handlers de mensagens
+    # Handler de boas-vindas
     dp.add_handler(MessageHandler(
         Filters.status_update.new_chat_members,
         enviar_boas_vindas
@@ -242,15 +190,13 @@ def main():
         fallbacks=[]
     ))
 
-    # Configurar comandos do bot
+    # Comandos do bot
     updater.bot.set_my_commands([
-        BotCommand("start", "Iniciar o painel de controle"),
-        BotCommand("advertir", "Advertir um usuário (responda a mensagem)"),
-        BotCommand("silenciar", "Silenciar um usuário (responda a mensagem)"),
-        BotCommand("banir", "Banir um usuário (responda a mensagem)")
+        BotCommand("start", "Abrir painel de controle"),
+        BotCommand("advertir", "Advertir um usuário")
     ])
 
-    logger.info("Bot iniciado e funcionando")
+    logger.info("Bot iniciado com sucesso")
     updater.idle()
 
 if __name__ == '__main__':

@@ -1,38 +1,34 @@
 import os
 
 # Configurações essenciais
-TOKEN = os.getenv('TELEGRAM_TOKEN', '')  # Obtenha via variável de ambiente
-ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]  # Formato: "123,456"
+TOKEN = os.getenv('TOKEN_BOT')
+ADMIN_IDS = [int(id) for id in os.getenv('ADMINS', '').split(',') if id]
 
 # Configurações do Render
 RENDER_CONFIG = {
-    'WEBHOOK_URL': os.getenv('RENDER_EXTERNAL_URL', ''),
-    'PORT': int(os.getenv('PORT', 8443)),
+    'URL_WEBHOOK': os.getenv('URL_EXTERNA_RENDER', ''),
+    'PORTA': int(os.getenv('PORTA', 10000)),
     'HOST': '0.0.0.0'
 }
 
-# Configurações do Bot
+# Mensagens padrão
 BOT_CONFIG = {
-    'POLL_INTERVAL': 0.5,
-    'TIMEOUT': 10,
-    'DEFAULT_WELCOME': (
-        "🌟 Bem-vindo(a), {name}! 🌟\n\n"
-        "🔹 Respeite as regras\n"
-        "🔹 Sem spam/flood\n"
-        "🔹 Divirta-se!"
-    ),
-    'MAX_MESSAGE_LENGTH': 4000
+    'MENSAGEM_BOAS_VINDAS': (
+        "👋 Olá {nome}! Bem-vindo(a)!\n\n"
+        "📌 Leia as regras do grupo\n"
+        "🛡️ Respeite todos os membros\n"
+        "✅ Divirta-se!"
+    )
 }
 
-# Configurações de Segurança
+# Configurações de segurança
 SECURITY = {
-    'BLOCK_LINKS': True,
-    'BLOCK_FORWARDS': True,
-    'MAX_WARNINGS': 3
+    'BLOQUEAR_LINKS': True,
+    'MAX_ADVERTENCIAS': 3
 }
 
-# Database (Render não persiste arquivos, então usamos JSON temporário)
+# Armazenamento (usando /tmp no Render)
 DATABASE = {
-    'WELCOME_MSG_FILE': '/tmp/welcome_messages.json',
-    'GROUP_SETTINGS_FILE': '/tmp/group_settings.json'
+    'WELCOME_MSG_FILE': '/tmp/boas_vindas.json',
+    'GROUP_SETTINGS_FILE': '/tmp/config_grupos.json'
 }
