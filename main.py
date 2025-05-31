@@ -413,6 +413,7 @@ def main() -> None:
                 cur.execute(
                     "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
                     (int(admin_id.strip()),)
+                )
         conn.commit()
     except Exception as e:
         logger.error(f"Erro ao configurar admins do bot: {e}")
@@ -431,8 +432,8 @@ def main() -> None:
     # Handlers de mensagens
     dispatcher.add_handler(MessageHandler(
         Filters.text & (~Filters.command), 
-        handle_verification_keywords)
-    )
+        handle_verification_keywords
+    ))
     
     # Handler para botões
     dispatcher.add_handler(CallbackQueryHandler(button_handler))
