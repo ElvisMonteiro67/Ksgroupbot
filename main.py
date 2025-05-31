@@ -34,16 +34,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configurações aprimoradas para o Render
-MAX_RETRIES = 5  # Aumentado para mais tentativas
-RETRY_DELAY = 10  # Aumentado o tempo entre tentativas
-WEBHOOK_MODE = os.getenv('WEBHOOK_MODE', 'false').lower() == 'true'  # Modo webhook opcional
+MAX_RETRIES = 5
+RETRY_DELAY = 10
+WEBHOOK_MODE = os.getenv('WEBHOOK_MODE', 'false').lower() == 'true'
 
 # ==============================================
-# FUNÇÕES ORIGINAIS DO BOT (MANTIDAS)
+# FUNÇÕES DE BANCO DE DADOS
 # ==============================================
 
 @contextmanager
 def db_connection():
+    """Gerenciador de contexto para conexões com o banco de dados."""
     conn = None
     try:
         conn = get_db_connection()
@@ -59,50 +60,156 @@ def get_db_connection():
     """Estabelece conexão com o banco de dados PostgreSQL."""
     try:
         result = urlparse(os.getenv('DATABASE_URL'))
-        username = result.username
-        password = result.password
-        database = result.path[1:]
-        hostname = result.hostname
-        port = result.port
-
         conn = psycopg2.connect(
-            dbname=database,
-            user=username,
-            password=password,
-            host=hostname,
-            port=port
+            dbname=result.path[1:],
+            user=result.username,
+            password=result.password,
+            host=result.hostname,
+            port=result.port
         )
         return conn
     except Exception as e:
         logger.error(f"Erro ao conectar ao banco de dados: {e}")
         raise
 
-# ... (Todas as outras funções originais permanecem EXATAMENTE IGUAIS)
-# Incluindo: init_db, is_bot_admin, add_bot_admin, add_group_admin, 
-# add_verified_user, remove_verified_user, remove_group_admin,
-# get_user_by_username, start, button_handler, handle_text_input,
-# handle_verification_keywords, handle_new_member, error_handler
+def init_db():
+    """Inicializa o banco de dados criando as tabelas necessárias."""
+    commands = (
+        """
+        CREATE TABLE IF NOT EXISTS bot_admins (
+            user_id BIGINT PRIMARY KEY,
+            username VARCHAR(255),
+            full_name VARCHAR(255)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS group_admins (
+            user_id BIGINT,
+            chat_id BIGINT,
+            username VARCHAR(255),
+            full_name VARCHAR(255),
+            PRIMARY KEY (user_id, chat_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS verified_users (
+            user_id BIGINT PRIMARY KEY,
+            username VARCHAR(255),
+            full_name VARCHAR(255),
+            status VARCHAR(50) DEFAULT 'pending'
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS verification_requests (
+            request_id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            video_url VARCHAR(255),
+            request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status VARCHAR(50) DEFAULT 'pending',
+            reviewed_by BIGINT,
+            review_date TIMESTAMP
+        )
+        """
+    )
+    
+    try:
+        with db_connection() as conn:
+            cur = conn.cursor()
+            for command in commands:
+                cur.execute(command)
+            conn.commit()
+        logger.info("Banco de dados inicializado com sucesso")
+    except Exception as e:
+        logger.error(f"Erro ao inicializar banco de dados: {e}")
+        raise
+
+def setup_admin_users():
+    """Configura os administradores iniciais do bot."""
+    admin_ids = os.getenv('BOT_ADMINS', '').split(',')
+    if not admin_ids:
+        return
+
+    try:
+        with db_connection() as conn:
+            cur = conn.cursor()
+            for admin_id in admin_ids:
+                if admin_id.strip().isdigit():
+                    admin_id_int = int(admin_id.strip())
+                    try:
+                        bot = Bot(token=os.getenv('TELEGRAM_TOKEN'))
+                        try:
+                            user = bot.get_chat(admin_id_int)
+                            username = user.username or ''
+                            full_name = user.full_name or ''
+                            
+                            cur.execute(
+                                """INSERT INTO bot_admins (user_id, username, full_name) 
+                                VALUES (%s, %s, %s) ON CONFLICT (user_id) 
+                                DO UPDATE SET username = EXCLUDED.username, full_name = EXCLUDED.full_name""",
+                                (admin_id_int, username, full_name)
+                            )
+                        except (TelegramError, BadRequest) as e:
+                            logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
+                            cur.execute(
+                                "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                                (admin_id_int,)
+                            )
+                    except Exception as e:
+                        logger.error(f"Erro ao configurar admin {admin_id}: {e}")
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Erro ao configurar admins do bot: {e}")
 
 # ==============================================
-# SOLUÇÕES PARA O RENDER (ADICIONADAS)
+# FUNÇÕES PRINCIPAIS DO BOT
+# ==============================================
+
+def start(update: Update, context: CallbackContext) -> None:
+    """Handler para o comando /start."""
+    if update.effective_chat.type == "private":
+        if is_bot_admin(update.effective_user.id):
+            keyboard = [
+                [InlineKeyboardButton("➕ Adicionar Verificada", callback_data='admin_add_verified')],
+                [InlineKeyboardButton("➖ Remover Verificada", callback_data='admin_remove_verified')],
+                [InlineKeyboardButton("👑 Adicionar Admin Grupo", callback_data='admin_add_group_admin')],
+                [InlineKeyboardButton("👑 Remover Admin Grupo", callback_data='admin_remove_group_admin')],
+                [InlineKeyboardButton("📋 Listar Verificadas", callback_data='admin_list_verified')],
+                [InlineKeyboardButton("📋 Listar Admins Grupo", callback_data='admin_list_group_admins')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text("👑 Menu Admin:", reply_markup=reply_markup)
+        else:
+            keyboard = [
+                [InlineKeyboardButton("✅ Seja uma Verificada", callback_data='be_verified')],
+                [InlineKeyboardButton("👑 Sobre Admins", callback_data='about_admins')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text("👋 Bem-vindo ao bot!", reply_markup=reply_markup)
+    else:
+        update.message.reply_text("🤖 Bot ativo! Digite /start no privado para opções.")
+
+# ... (Adicione aqui TODAS as outras funções do seu bot originais)
+# Incluindo: is_bot_admin, add_group_admin, add_verified_user, 
+# remove_verified_user, remove_group_admin, get_user_by_username,
+# button_handler, handle_text_input, handle_verification_keywords,
+# handle_new_member, error_handler
+
+# ==============================================
+# SOLUÇÕES PARA O RENDER
 # ==============================================
 
 def ensure_single_instance(bot_token: str) -> bool:
-    """Verifica se não há outra instância do bot em execução com tratamento aprimorado."""
+    """Verifica se não há outra instância do bot em execução."""
     try:
         test_bot = Bot(token=bot_token)
         try:
-            # Testa a conexão e verifica se há conflito
-            test_bot.get_me()
+            test_bot.get_me()  # Testa a conexão
             try:
-                updates = test_bot.get_updates(timeout=5)
-                if updates:
-                    logger.warning("Outra instância detectada via updates. Encerrando...")
-                    return False
+                test_bot.get_updates(timeout=5)  # Verifica conflitos
+                return True
             except Conflict:
-                logger.warning("Conflito detectado diretamente. Encerrando...")
+                logger.warning("Conflito detectado - outra instância em execução")
                 return False
-            return True
         except Exception as e:
             logger.error(f"Erro ao verificar instância: {e}")
             return True
@@ -116,10 +223,8 @@ def start_webhook(updater: Updater):
     WEBHOOK_URL = f"{os.getenv('WEBHOOK_URL')}/{os.getenv('TELEGRAM_TOKEN')}"
     
     try:
-        # Limpa webhooks anteriores
         updater.bot.delete_webhook()
         time.sleep(1)
-        
         updater.start_webhook(
             listen="0.0.0.0",
             port=PORT,
@@ -128,7 +233,7 @@ def start_webhook(updater: Updater):
             clean=True,
             drop_pending_updates=True
         )
-        logger.info(f"Bot iniciado via webhook na porta {PORT}")
+        logger.info(f"Webhook ativo na porta {PORT}")
     except Exception as e:
         logger.error(f"Falha ao iniciar webhook: {e}")
         raise
@@ -138,9 +243,9 @@ def start_polling_safely(updater: Updater):
     for attempt in range(MAX_RETRIES):
         try:
             if not ensure_single_instance(updater.bot.token):
+                logger.warning(f"Tentativa {attempt + 1}/{MAX_RETRIES} - Instância duplicada detectada")
                 if attempt == MAX_RETRIES - 1:
-                    logger.critical("Falha após várias tentativas. Encerrando.")
-                    sys.exit(1)
+                    raise RuntimeError("Máximo de tentativas atingido com conflitos")
                 time.sleep(RETRY_DELAY)
                 continue
                 
@@ -157,13 +262,12 @@ def start_polling_safely(updater: Updater):
         except Conflict as e:
             logger.warning(f"Conflito na tentativa {attempt + 1}/{MAX_RETRIES}: {e}")
             if attempt == MAX_RETRIES - 1:
-                logger.critical("Máximo de tentativas atingido. Encerrando.")
-                sys.exit(1)
+                raise RuntimeError("Máximo de tentativas atingido com conflitos")
             time.sleep(RETRY_DELAY)
             
         except Exception as e:
-            logger.critical(f"Erro inesperado: {e}")
-            sys.exit(1)
+            logger.error(f"Erro inesperado: {e}")
+            raise
 
 def start_bot(updater: Updater):
     """Seleciona o método de inicialização baseado na configuração."""
@@ -178,16 +282,15 @@ def start_bot(updater: Updater):
 
 def main() -> None:
     """Função principal com inicialização segura."""
-    # Verificação inicial
-    token = os.getenv('TELEGRAM_TOKEN')
-    if not token:
-        logger.critical("Token do Telegram não configurado!")
-        sys.exit(1)
-    
     try:
+        # Verificação inicial
+        token = os.getenv('TELEGRAM_TOKEN')
+        if not token:
+            raise ValueError("Token do Telegram não configurado!")
+        
         # Inicializações
         init_db()
-        setup_admin_users()  # Mantenha sua função original de setup
+        setup_admin_users()
         
         # Configuração do Updater
         updater = Updater(
@@ -200,7 +303,7 @@ def main() -> None:
             }
         )
         
-        # Registra handlers (mantenha seus handlers originais)
+        # Registra handlers
         dispatcher = updater.dispatcher
         dispatcher.add_handler(CommandHandler("start", start))
         dispatcher.add_handler(CallbackQueryHandler(button_handler))
