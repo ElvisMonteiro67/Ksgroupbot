@@ -1,45 +1,39 @@
 import os
 
-# Configurações essenciais
-TOKEN = os.getenv('TOKEN_BOT')
-ADMIN_IDS = [int(id) for id in os.getenv('ADMINS', '').split(',') if id]
+# Configurações principais
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]
 
 # Configurações do Render
 RENDER_CONFIG = {
-    'URL_WEBHOOK': os.getenv('URL_EXTERNA_RENDER', ''),
-    'PORTA': int(os.getenv('PORTA', 10000)),
+    'WEBHOOK_URL': os.getenv('RENDER_EXTERNAL_URL', ''),
+    'PORT': int(os.getenv('PORT', 10000)),
     'HOST': '0.0.0.0'
 }
 
-# Mensagens padrão
+# Configurações do Bot
 BOT_CONFIG = {
-    'MENSAGEM_BOAS_VINDAS': (
-        "👋 Olá {nome}! Bem-vindo(a) ao grupo!\n\n"
-        "📌 Por favor leia as regras abaixo\n"
-        "🛡️ Respeite todos os membros\n"
-        "✅ Participe e divirta-se!"
+    'DEFAULT_WELCOME_MSG': (
+        "👋 Olá {name}! Bem-vindo ao grupo!\n\n"
+        "📌 Por favor leia as regras\n"
+        "🛡️ Respeite todos os membros"
     ),
-    'MENSAGEM_REGRAS': (
-        "📜 *REGRAS DO GRUPO* 📜\n\n"
-        "1️⃣ Respeite todos os membros\n"
-        "2️⃣ Proibido spam/flood\n"
-        "3️⃣ Não compartilhe conteúdo ilegal\n"
-        "4️⃣ Mantenha discussões civilizadas\n\n"
-        "⚠️ Infrações resultam em mute/ban"
-    ),
-    'CANAL_PRINCIPAL': "https://t.me/seucanal"
+    'DEFAULT_WELCOME_IMAGE': None,  # URL de imagem padrão
+    'WELCOME_BUTTONS': [
+        {"text": "📜 Regras", "url": ""},
+        {"text": "📢 Canal", "url": "https://t.me/seucanal"}
+    ]
 }
 
 # Configurações de segurança
 SECURITY = {
-    'MAX_ADVERTENCIAS': 3,
-    'TEMPO_MUTE_PADRAO': '1h'
+    'MAX_WARNINGS': 3,
+    'MUTE_DURATION': 3600  # 1 hora em segundos
 }
 
-# Armazenamento (usando /tmp no Render)
+# Armazenamento de dados
 DATABASE = {
-    'WELCOME_MSG_FILE': '/tmp/boas_vindas.json',
-    'RULES_FILE': '/tmp/regras.json',
-    'GROUP_SETTINGS_FILE': '/tmp/config_grupos.json',
-    'WARNINGS_FILE': '/tmp/advertencias.json'
+    'WELCOME_FILE': '/tmp/welcome_data.json',
+    'GROUP_SETTINGS_FILE': '/tmp/group_settings.json',
+    'WARNINGS_FILE': '/tmp/warnings.json'
 }
