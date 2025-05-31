@@ -1,12 +1,14 @@
 import os
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ChatPermissions,
     ChatMember,
+    BotCommand,
+    ParseMode
 )
 from telegram.ext import (
     Updater,
@@ -16,8 +18,9 @@ from telegram.ext import (
     CallbackContext,
     CallbackQueryHandler,
     ChatMemberHandler,
+    ConversationHandler
 )
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Unauthorized
 import json
 from config import TOKEN, ADMIN_IDS
 
@@ -28,10 +31,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Estados da conversa
+SETTING_WELCOME, SETTING_RULES = range(2)
+
 # Caminhos dos arquivos de dados
-WELCOME_MSG_FILE = 'data/welcome_messages.json'
-VERIFIED_USERS_FILE = 'data/verified_users.json'
-GROUP_SETTINGS_FILE = 'data/group_settings.json'
+DATA_DIR = 'data'
+os.makedirs(DATA_DIR, exist_ok=True)
+WELCOME_MSG_FILE = os.path.join(DATA_DIR, 'welcome_messages.json')
+VERIFIED_USERS_FILE = os.path.join(DATA_DIR, 'verified_users.json')
+GROUP_SETTINGS_FILE = os.path.join(DATA_DIR, 'group_settings.json')
 
 # Carregar dados
 def load_data(file_path: str, default_data=None):
@@ -43,7 +51,6 @@ def load_data(file_path: str, default_data=None):
 
 # Salvar dados
 def save_data(file_path: str, data):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -55,10 +62,12 @@ group_settings = load_data(GROUP_SETTINGS_FILE, {})
 # Funções auxiliares
 def is_admin(update: Update, context: CallbackContext) -> bool:
     user = update.effective_user
-    chat = update.effective_chat
-    
     if user.id in ADMIN_IDS:
         return True
+    
+    chat = update.effective_chat
+    if chat.type not in ['group', 'supergroup']:
+        return False
     
     try:
         member = context.bot.get_chat_member(chat.id, user.id)
@@ -66,321 +75,234 @@ def is_admin(update: Update, context: CallbackContext) -> bool:
     except:
         return False
 
-def is_verified(user_id: int) -> bool:
-    return str(user_id) in verified_users
-
 def delete_message(update: Update, context: CallbackContext):
     try:
         update.message.delete()
-    except BadRequest as e:
+    except (BadRequest, Unauthorized) as e:
         logger.warning(f"Failed to delete message: {e}")
 
-# Comandos de administração
-def warn_user(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
+def get_group_settings(chat_id: int) -> Dict:
+    return group_settings.get(str(chat_id), {
+        'delete_old_welcome': False,
+        'block_links': True,
+        'block_forwards': True,
+        'welcome_buttons': {
+            'rules': True,
+            'channel': True,
+            'website': False
+        }
+    })
 
-    if not update.message.reply_to_message:
-        update.message.reply_text("Por favor, responda à mensagem do usuário que deseja advertir.")
-        return
-
-    warned_user = update.message.reply_to_message.from_user
+# Mensagem de boas-vindas melhorada
+def send_enhanced_welcome(update: Update, context: CallbackContext, new_member):
     chat_id = update.effective_chat.id
+    settings = get_group_settings(chat_id)
     
-    # Adicionar advertência (implementar lógica de contagem se desejar)
-    context.bot.send_message(
-        chat_id,
-        f"⚠️ {warned_user.mention_html()} foi advertido por {update.effective_user.mention_html()}.",
-        parse_mode='HTML'
+    welcome_msg = welcome_messages.get(str(chat_id), (
+        f"🌟 Bem-vindo(a), {new_member.mention_html()}! 🌟\n\n"
+        "Você acabou de entrar em um grupo especial! Aqui estão algumas coisas que posso fazer:\n"
+        "✅ Manter o grupo seguro e organizado\n"
+        "🛡️ Bloquear links e spam automaticamente\n"
+        "👋 Personalizar mensagens de boas-vindas\n"
+        "⚡ Gerenciar usuários problemáticos\n\n"
+        "Por favor, leia as regras abaixo e aproveite sua estadia!"
+    )
+    
+    # Construir teclado de botões
+    buttons = []
+    if settings['welcome_buttons'].get('rules', True):
+        buttons.append(InlineKeyboardButton("📜 Regras", callback_data="show_rules"))
+    if settings['welcome_buttons'].get('channel', True):
+        buttons.append(InlineKeyboardButton("📢 Canal", url="https://t.me/seucanal"))
+    if settings['welcome_buttons'].get('website', False):
+        buttons.append(InlineKeyboardButton("🌐 Site", url="https://seusite.com"))
+    
+    keyboard = [buttons] if buttons else None
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    sent_msg = context.bot.send_message(
+        chat_id=chat_id,
+        text=welcome_msg,
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.HTML
+    )
+    
+    # Gerenciar mensagens antigas se configurado
+    if settings.get('delete_old_welcome', False):
+        if 'last_welcome_message_id' in context.chat_data:
+            try:
+                context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=context.chat_data['last_welcome_message_id']
+                )
+            except BadRequest as e:
+                logger.warning(f"Failed to delete old welcome message: {e}")
+        context.chat_data['last_welcome_message_id'] = sent_msg.message_id
+
+# Configuração via chat privado
+def start_private_chat(update: Update, context: CallbackContext):
+    if update.effective_chat.type != 'private':
+        return
+    
+    user = update.effective_user
+    if not is_admin(update, context):
+        update.message.reply_text(
+            "Olá! Eu sou um bot de gerenciamento de grupos. "
+            "Apenas administradores podem me configurar."
+        )
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("⚙️ Configurar Mensagem de Boas-vindas", callback_data="setup_welcome")],
+        [InlineKeyboardButton("🔧 Configurações do Grupo", callback_data="group_settings")],
+        [InlineKeyboardButton("👥 Gerenciar Usuários Verificados", callback_data="manage_verified")]
+    ]
+    
+    update.message.reply_text(
+        "🛠️ *Painel de Controle do Bot* 🛠️\n\n"
+        "Escolha uma opção abaixo para configurar o bot:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+def setup_welcome_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    
+    query.edit_message_text(
+        "✍️ *Configuração de Boas-vindas*\n\n"
+        "Por favor, envie a nova mensagem de boas-vindas. Você pode usar:\n"
+        "- `{name}`: Nome do usuário\n"
+        "- `{username}`: @username (se disponível)\n"
+        "- `{id}`: ID do usuário\n\n"
+        "Exemplo:\n"
+        "`Olá {name}! Bem-vindo ao nosso grupo!`",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    return SETTING_WELCOME
+
+def setting_welcome(update: Update, context: CallbackContext):
+    chat_id = str(update.effective_chat.id)
+    welcome_messages[chat_id] = update.message.text
+    save_data(WELCOME_MSG_FILE, welcome_messages)
+    
+    update.message.reply_text(
+        "✅ Mensagem de boas-vindas atualizada com sucesso!\n\n"
+        "Pré-visualização:\n" + update.message.text.replace('{name}', 'NovoMembro')
+    )
+    
+    return ConversationHandler.END
+
+# Comandos administrativos com botões
+def admin_panel(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("⚠️ Advertir", callback_data="warn_user"),
+            InlineKeyboardButton("🔇 Silenciar", callback_data="mute_user")
+        ],
+        [
+            InlineKeyboardButton("🚫 Banir", callback_data="ban_user"),
+            InlineKeyboardButton("🛡️ Verificados", callback_data="verified_list")
+        ],
+        [InlineKeyboardButton("⚙️ Configurações", callback_data="group_settings_main")]
+    ]
+    
+    update.message.reply_text(
+        "👮 *Painel de Administração* 👮\n\n"
+        "Selecione uma ação:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
     )
     delete_message(update, context)
 
-def mute_user(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    if not update.message.reply_to_message:
-        update.message.reply_text("Por favor, responda à mensagem do usuário que deseja silenciar.")
-        return
-
-    user_to_mute = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
+# Handler para botões
+def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
     
-    try:
-        context.bot.restrict_chat_member(
-            chat_id,
-            user_to_mute.id,
-            ChatPermissions(
-                can_send_messages=False,
-                can_send_media_messages=False,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-                can_change_info=False,
-                can_invite_users=False,
-                can_pin_messages=False
-            )
-        )
-        context.bot.send_message(
-            chat_id,
-            f"🔇 {user_to_mute.mention_html()} foi silenciado por {update.effective_user.mention_html()}.",
-            parse_mode='HTML'
-        )
-    except BadRequest as e:
-        context.bot.send_message(chat_id, f"Erro ao silenciar usuário: {e}")
+    data = query.data
+    chat_id = query.message.chat_id
     
-    delete_message(update, context)
+    if data == "setup_welcome":
+        setup_welcome_callback(update, context)
+    elif data == "group_settings":
+        show_group_settings(update, context)
+    elif data == "manage_verified":
+        manage_verified_users(update, context)
+    # Adicione outros handlers para botões aqui
 
-def ban_user(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    if not update.message.reply_to_message:
-        update.message.reply_text("Por favor, responda à mensagem do usuário que deseja banir.")
-        return
-
-    user_to_ban = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
+def show_group_settings(update: Update, context: CallbackContext):
+    query = update.callback_query
+    chat_id = str(query.message.chat_id)
+    settings = get_group_settings(chat_id)
     
-    try:
-        context.bot.ban_chat_member(chat_id, user_to_ban.id)
-        context.bot.send_message(
-            chat_id,
-            f"🚫 {user_to_ban.mention_html()} foi banido por {update.effective_user.mention_html()}.",
-            parse_mode='HTML'
-        )
-    except BadRequest as e:
-        context.bot.send_message(chat_id, f"Erro ao banir usuário: {e}")
+    text = (
+        "⚙️ *Configurações do Grupo* ⚙️\n\n"
+        f"🔹 Apagar mensagens antigas: {'✅' if settings['delete_old_welcome'] else '❌'}\n"
+        f"🔹 Bloquear links: {'✅' if settings['block_links'] else '❌'}\n"
+        f"🔹 Bloquear encaminhamentos: {'✅' if settings['block_forwards'] else '❌'}\n\n"
+        "Botões de boas-vindas:\n"
+        f"- Regras: {'✅' if settings['welcome_buttons'].get('rules', True) else '❌'}\n"
+        f"- Canal: {'✅' if settings['welcome_buttons'].get('channel', True) else '❌'}\n"
+        f"- Website: {'✅' if settings['welcome_buttons'].get('website', False) else '❌'}"
+    )
     
-    delete_message(update, context)
-
-# Gerenciamento de mensagens de boas-vindas
-def set_welcome(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    chat_id = str(update.effective_chat.id)
-    if not context.args:
-        update.message.reply_text("Por favor, forneça a mensagem de boas-vindas.\nExemplo: /setwelcome Olá {name}, bem-vindo ao grupo!")
-        return
-
-    welcome_message = ' '.join(context.args)
-    welcome_messages[chat_id] = welcome_message
-    save_data(WELCOME_MSG_FILE, welcome_messages)
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 Alternar Apagar Mensagens", callback_data="toggle_delete"),
+            InlineKeyboardButton("🔗 Alternar Links", callback_data="toggle_links")
+        ],
+        [
+            InlineKeyboardButton("↩️ Alternar Encaminhamentos", callback_data="toggle_forwards"),
+            InlineKeyboardButton("👋 Botões Boas-vindas", callback_data="welcome_buttons")
+        ],
+        [InlineKeyboardButton("🔙 Voltar", callback_data="back_to_main")]
+    ]
     
-    update.message.reply_text("Mensagem de boas-vindas atualizada com sucesso!")
-    delete_message(update, context)
-
-def welcome_new_member(update: Update, context: CallbackContext):
-    chat_id = str(update.effective_chat.id)
-    
-    # Verificar se é uma mensagem de novo membro
-    for new_member in update.message.new_chat_members:
-        # Verificar se é um usuário verificado e promover se necessário
-        if str(new_member.id) in verified_users:
-            try:
-                context.bot.promote_chat_member(
-                    chat_id=update.effective_chat.id,
-                    user_id=new_member.id,
-                    can_change_info=False,
-                    can_post_messages=False,
-                    can_edit_messages=False,
-                    can_delete_messages=False,
-                    can_invite_users=False,
-                    can_restrict_members=False,
-                    can_pin_messages=False,
-                    can_promote_members=False,
-                    can_manage_video_chats=False,
-                    can_manage_chat=False
-                )
-                context.bot.set_chat_administrator_custom_title(
-                    chat_id=update.effective_chat.id,
-                    user_id=new_member.id,
-                    custom_title="Verificado"
-                )
-            except BadRequest as e:
-                logger.error(f"Erro ao promover usuário verificado: {e}")
-        
-        # Enviar mensagem de boas-vindas
-        welcome_msg = welcome_messages.get(chat_id, "Olá {name}, bem-vindo ao grupo!")
-        welcome_msg = welcome_msg.replace("{name}", new_member.mention_html())
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📢 Canal", url="https://t.me/seucanal"),
-                InlineKeyboardButton("📚 Regras", callback_data="rules")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        sent_msg = context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=welcome_msg,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        # Configuração para apagar mensagens antigas de boas-vindas
-        if group_settings.get(chat_id, {}).get('delete_old_welcome', False):
-            if 'last_welcome_message_id' in context.chat_data:
-                try:
-                    context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=context.chat_data['last_welcome_message_id']
-                    )
-                except BadRequest as e:
-                    logger.warning(f"Failed to delete old welcome message: {e}")
-            
-            context.chat_data['last_welcome_message_id'] = sent_msg.message_id
-
-# Configurações do grupo
-def toggle_welcome_delete(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    chat_id = str(update.effective_chat.id)
-    if chat_id not in group_settings:
-        group_settings[chat_id] = {}
-    
-    current = group_settings[chat_id].get('delete_old_welcome', False)
-    group_settings[chat_id]['delete_old_welcome'] = not current
-    save_data(GROUP_SETTINGS_FILE, group_settings)
-    
-    status = "ativada" if not current else "desativada"
-    update.message.reply_text(f"Exclusão automática de mensagens antigas de boas-vindas {status}.")
-    delete_message(update, context)
-
-# Gerenciamento de links e encaminhamentos
-def filter_messages(update: Update, context: CallbackContext):
-    if update.effective_chat.type not in ['group', 'supergroup']:
-        return
-    
-    chat_id = str(update.effective_chat.id)
-    settings = group_settings.get(chat_id, {})
-    
-    # Verificar se o filtro de links está ativado
-    if settings.get('block_links', False):
-        # Verificar se a mensagem contém links
-        if update.message.entities:
-            for entity in update.message.entities:
-                if entity.type in ['url', 'text_link']:
-                    if not is_admin(update, context):
-                        update.message.delete()
-                        context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text=f"❌ Links não são permitidos neste grupo. {update.effective_user.mention_html()} sua mensagem foi removida.",
-                            parse_mode='HTML'
-                        )
-                        return
-    
-    # Verificar se o filtro de encaminhamentos está ativado
-    if settings.get('block_forwards', False) and update.message.forward_from_chat:
-        if not is_admin(update, context):
-            update.message.delete()
-            context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"❌ Encaminhamentos de outros chats não são permitidos. {update.effective_user.mention_html()} sua mensagem foi removida.",
-                parse_mode='HTML'
-            )
-            return
-
-# Gerenciamento de usuários verificados
-def add_verified(update: Update, context: CallbackContext):
-    if update.effective_user.id not in ADMIN_IDS:
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    if not context.args:
-        update.message.reply_text("Por favor, forneça o ID do usuário a ser verificado.\nExemplo: /addverified 123456789")
-        return
-
-    user_id = context.args[0]
-    verified_users[user_id] = True
-    save_data(VERIFIED_USERS_FILE, verified_users)
-    
-    update.message.reply_text(f"Usuário {user_id} adicionado à lista de verificados.")
-    delete_message(update, context)
-
-def remove_verified(update: Update, context: CallbackContext):
-    if update.effective_user.id not in ADMIN_IDS:
-        update.message.reply_text("Você não tem permissão para usar este comando.")
-        return
-
-    if not context.args:
-        update.message.reply_text("Por favor, forneça o ID do usuário a ser removido.\nExemplo: /removeverified 123456789")
-        return
-
-    user_id = context.args[0]
-    if user_id in verified_users:
-        del verified_users[user_id]
-        save_data(VERIFIED_USERS_FILE, verified_users)
-        update.message.reply_text(f"Usuário {user_id} removido da lista de verificados.")
-    else:
-        update.message.reply_text(f"Usuário {user_id} não está na lista de verificados.")
-    
-    delete_message(update, context)
-
-# Comandos básicos
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Olá! Eu sou um bot de gerenciamento de grupos. Use /help para ver meus comandos.")
-
-def help_command(update: Update, context: CallbackContext):
-    if is_admin(update, context):
-        help_text = """
-        👮‍♂️ *Comandos de Administrador*:
-        /warn - Advertir um usuário (responda a uma mensagem)
-        /mute - Silenciar um usuário (responda a uma mensagem)
-        /ban - Banir um usuário (responda a uma mensagem)
-        /setwelcome [mensagem] - Definir mensagem de boas-vindas
-        /togglewelcome - Ativar/desativar exclusão de mensagens antigas de boas-vindas
-        /blocklinks - Ativar/desativar bloqueio de links
-        /blockforwards - Ativar/desativar bloqueio de encaminhamentos
-        
-        🛡️ *Comandos de Dono* (apenas para donos do bot):
-        /addverified [id] - Adicionar usuário verificado
-        /removeverified [id] - Remover usuário verificado
-        """
-    else:
-        help_text = "Você não tem permissão para usar comandos de administrador."
-    
-    update.message.reply_text(help_text, parse_mode='Markdown')
-
-def error_handler(update: Update, context: CallbackContext):
-    logger.error(f"Update {update} caused error {context.error}")
-    if update.effective_message:
-        update.effective_message.reply_text("Ocorreu um erro ao processar seu comando.")
+    query.edit_message_text(
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 def main():
     # Criar o Updater e passar o token do bot
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Handlers de comandos
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
+    # Configurar comandos do bot
+    commands = [
+        BotCommand("start", "Iniciar o bot"),
+        BotCommand("admin", "Painel de administração"),
+        BotCommand("help", "Ajuda e informações")
+    ]
+    updater.bot.set_my_commands(commands)
+
+    # Handlers de conversação para configuração
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(setup_welcome_callback, pattern='^setup_welcome$')],
+        states={
+            SETTING_WELCOME: [MessageHandler(Filters.text & ~Filters.command, setting_welcome)],
+        },
+        fallbacks=[CommandHandler('cancel', lambda u,c: ConversationHandler.END)]
+    )
+    dp.add_handler(conv_handler)
+
+    # Handlers principais
+    dp.add_handler(CommandHandler("start", start_private_chat))
+    dp.add_handler(CommandHandler("admin", admin_panel))
+    dp.add_handler(CallbackQueryHandler(button_handler))
     
-    # Comandos de administração
-    dp.add_handler(CommandHandler("warn", warn_user))
-    dp.add_handler(CommandHandler("mute", mute_user))
-    dp.add_handler(CommandHandler("ban", ban_user))
-    dp.add_handler(CommandHandler("setwelcome", set_welcome))
-    dp.add_handler(CommandHandler("togglewelcome", toggle_welcome_delete))
-    
-    # Comandos de dono
-    dp.add_handler(CommandHandler("addverified", add_verified))
-    dp.add_handler(CommandHandler("removeverified", remove_verified))
-    
-    # Handlers de mensagens
-    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_new_member))
+    # Handler para novos membros
+    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, 
+                               lambda u,c: [send_enhanced_welcome(u,c, member) for member in u.message.new_chat_members]))
+
+    # Handler para mensagens em grupos
     dp.add_handler(MessageHandler(Filters.text & Filters.chat_type.groups, filter_messages))
-    
-    # Handler de erros
-    dp.add_error_handler(error_handler)
 
     # Iniciar o bot
     updater.start_polling()
