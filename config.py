@@ -14,21 +14,32 @@ RENDER_CONFIG = {
 # Mensagens padrão
 BOT_CONFIG = {
     'MENSAGEM_BOAS_VINDAS': (
-        "👋 Olá {nome}! Bem-vindo(a)!\n\n"
-        "📌 Leia as regras do grupo\n"
+        "👋 Olá {nome}! Bem-vindo(a) ao grupo!\n\n"
+        "📌 Por favor leia as regras abaixo\n"
         "🛡️ Respeite todos os membros\n"
-        "✅ Divirta-se!"
-    )
+        "✅ Participe e divirta-se!"
+    ),
+    'MENSAGEM_REGRAS': (
+        "📜 *REGRAS DO GRUPO* 📜\n\n"
+        "1️⃣ Respeite todos os membros\n"
+        "2️⃣ Proibido spam/flood\n"
+        "3️⃣ Não compartilhe conteúdo ilegal\n"
+        "4️⃣ Mantenha discussões civilizadas\n\n"
+        "⚠️ Infrações resultam em mute/ban"
+    ),
+    'CANAL_PRINCIPAL': "https://t.me/seucanal"
 }
 
 # Configurações de segurança
 SECURITY = {
-    'BLOQUEAR_LINKS': True,
-    'MAX_ADVERTENCIAS': 3
+    'MAX_ADVERTENCIAS': 3,
+    'TEMPO_MUTE_PADRAO': '1h'
 }
 
 # Armazenamento (usando /tmp no Render)
 DATABASE = {
     'WELCOME_MSG_FILE': '/tmp/boas_vindas.json',
-    'GROUP_SETTINGS_FILE': '/tmp/config_grupos.json'
+    'RULES_FILE': '/tmp/regras.json',
+    'GROUP_SETTINGS_FILE': '/tmp/config_grupos.json',
+    'WARNINGS_FILE': '/tmp/advertencias.json'
 }
