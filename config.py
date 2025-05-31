@@ -18,22 +18,16 @@ BOT_CONFIG = {
         "📌 Por favor leia as regras\n"
         "🛡️ Respeite todos os membros"
     ),
-    'DEFAULT_WELCOME_IMAGE': None,  # URL de imagem padrão
+    'DEFAULT_WELCOME_IMAGE': None,
     'WELCOME_BUTTONS': [
         {"text": "📜 Regras", "url": ""},
         {"text": "📢 Canal", "url": "https://t.me/seucanal"}
-    ]
+    ],
+    'DATA_DIR': '/tmp/data'  # No Render, use /tmp para persistência temporária
 }
 
 # Configurações de segurança
 SECURITY = {
     'MAX_WARNINGS': 3,
     'MUTE_DURATION': 3600  # 1 hora em segundos
-}
-
-# Armazenamento de dados
-DATABASE = {
-    'WELCOME_FILE': '/tmp/welcome_data.json',
-    'GROUP_SETTINGS_FILE': '/tmp/group_settings.json',
-    'WARNINGS_FILE': '/tmp/warnings.json'
 }

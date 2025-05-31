@@ -33,211 +33,185 @@ logger = logging.getLogger(__name__)
 
 # Estados da conversação
 CONFIG_WELCOME_MSG, CONFIG_WELCOME_MEDIA, CONFIG_WELCOME_BUTTONS = range(3)
+CONFIG_GROUP_SETTINGS = 1
 
-# Carregar dados
-def load_data(file_path: str) -> Dict:
+class GroupManager:
+    def __init__(self, bot, db, config):
+        self.bot = bot
+        self.db = db
+        self.config = config
+        self.chats = {}
+        self.users = {}
+        
+    def is_chat_allowed(self, chat_id):
+        """Verifica se o chat está na whitelist/blacklist"""
+        return True  # Implementar lógica conforme necessário
+    
+    def load_chat_data(self, chat_id):
+        """Carrega dados do chat"""
+        if chat_id not in self.chats:
+            self.chats[chat_id] = self.db.load_chat(chat_id)
+        return self.chats[chat_id]
+    
+    def load_user_data(self, user_id):
+        """Carrega dados do usuário"""
+        if user_id not in self.users:
+            self.users[user_id] = self.db.load_user(user_id)
+        return self.users[user_id]
+
+# Funções principais adaptadas
+async def handle_message(update: Update, context: CallbackContext):
+    """Processa mensagens recebidas"""
     try:
-        with open(file_path, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-# Salvar dados
-def save_data(file_path: str, data: Dict):
-    try:
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logger.error(f"Erro ao salvar dados: {e}")
-
-# Inicializar dados
-welcome_data = load_data(DATABASE['WELCOME_FILE'])
-group_settings = load_data(DATABASE['GROUP_SETTINGS_FILE'])
-warnings_data = load_data(DATABASE['WARNINGS_FILE'])
-
-# Funções auxiliares
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-def get_group_settings(chat_id: int) -> Dict:
-    return group_settings.get(str(chat_id), {
-        'block_links': True,
-        'block_forwards': True,
-        'block_bots': True,
-        'welcome_enabled': True,
-        'max_warnings': SECURITY['MAX_WARNINGS']
-    })
-
-def delete_message(update: Update):
-    try:
-        update.message.delete()
-    except Exception as e:
-        logger.warning(f"Não foi possível deletar mensagem: {e}")
-
-# Handler de erros
-def error_handler(update: Update, context: CallbackContext):
-    logger.error(f"Erro: {context.error}", exc_info=True)
-    if update and update.effective_message:
-        update.effective_message.reply_text("⚠️ Ocorreu um erro. Tente novamente.")
-
-# MENSAGEM DE APRESENTAÇÃO DO BOT ---------------------------------
-
-def bot_added_to_group(update: Update, context: CallbackContext):
-    for member in update.message.new_chat_members:
-        if member.id == context.bot.id:
-            keyboard = [
-                [InlineKeyboardButton("⚙️ Configurar Grupo", 
-                    callback_data=f"config_group_{update.effective_chat.id}")],
-                [InlineKeyboardButton("📜 Ver Comandos", callback_data="bot_help")]
-            ]
+        message = update.effective_message
+        chat = update.effective_chat
+        user = update.effective_user
+        
+        # Verifica se o chat é permitido
+        if not context.bot_data['group_manager'].is_chat_allowed(chat.id):
+            return
+        
+        # Carrega dados do chat e usuário
+        chat_data = context.bot_data['group_manager'].load_chat_data(chat.id)
+        user_data = context.bot_data['group_manager'].load_user_data(user.id)
+        
+        # Verifica se é um novo grupo
+        if chat.type in ['group', 'supergroup']:
+            if (update.message.new_chat_members and 
+                any(member.id == context.bot.id for member in update.message.new_chat_members)):
+                await handle_bot_added(update, context, chat, user)
+                return
+        
+        # Processa comandos de moderação
+        if message.text and message.text.startswith('/'):
+            await handle_commands(update, context, chat_data, user_data)
             
-            update.message.reply_text(
-                f"🤖 *Obrigado por me adicionar ao grupo!*\n\n"
-                f"Eu sou um bot de moderação completo. Para configurar minhas funções, "
-                f"clique no botão abaixo ou me chame no privado.\n\n"
-                f"Grupo: {update.effective_chat.title}\n"
-                f"ID: `{update.effective_chat.id}`",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=ParseMode.MARKDOWN
-            )
-            break
+    except Exception as e:
+        logger.error(f"Erro ao processar mensagem: {e}")
 
-# CONFIGURAÇÃO VIA BOTÕES (PV) -----------------------------------
-
-def start_private(update: Update, context: CallbackContext):
-    if not is_admin(update.effective_user.id):
-        update.message.reply_text("⚠️ Você não tem permissão para configurar o bot.")
-        return
-    
+async def handle_bot_added(update: Update, context: CallbackContext, chat, user):
+    """Lida com a adição do bot a um grupo"""
     keyboard = [
-        [InlineKeyboardButton("👋 Configurar Boas-vindas", callback_data="config_welcome")],
-        [InlineKeyboardButton("🛡️ Configurar Grupo", callback_data="list_groups")]
+        [InlineKeyboardButton("⚙️ Configurar Grupo", 
+            callback_data=f"config_group_{chat.id}")],
+        [InlineKeyboardButton("📜 Ver Comandos", callback_data="show_help")]
     ]
     
-    update.message.reply_text(
-        "🛠 *Painel de Controle do Bot* 🛠\n\n"
-        "Escolha o que deseja configurar:",
+    await context.bot.send_message(
+        chat_id=chat.id,
+        text=f"🤖 *Obrigado por me adicionar ao grupo {chat.title}!*\n\n"
+             "Eu sou um bot de moderação completo. Use os botões abaixo para me configurar.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
-
-def list_groups(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
     
-    # Simulação - na prática você precisaria armazenar os grupos onde o bot foi adicionado
-    groups = {
-        "12345": "Grupo Principal",
-        "67890": "Grupo Secundário"
+    # Salva informações do grupo
+    context.bot_data['group_manager'].chats[chat.id] = {
+        'id': chat.id,
+        'title': chat.title,
+        'type': chat.type,
+        'settings': {
+            'block_links': True,
+            'block_forwards': True,
+            'block_bots': True,
+            'welcome_enabled': True
+        }
     }
-    
-    keyboard = []
-    for chat_id, title in groups.items():
-        keyboard.append([InlineKeyboardButton(
-            f"{title} (ID: {chat_id})", 
-            callback_data=f"config_group_{chat_id}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Voltar", callback_data="main_menu")])
-    
-    query.edit_message_text(
-        "📋 *Selecione um grupo para configurar* 📋\n\n"
-        "Lista de grupos onde estou presente:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
 
-def config_group_menu(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
+async def handle_commands(update: Update, context: CallbackContext, chat_data, user_data):
+    """Processa comandos recebidos"""
+    message = update.effective_message
+    command = message.text.split()[0][1:].lower()
     
-    chat_id = query.data.split('_')[2]
+    if command == 'start':
+        await start_command(update, context)
+    elif command == 'warn':
+        await warn_user(update, context)
+    elif command == 'mute':
+        await mute_user(update, context)
+    elif command == 'ban':
+        await ban_user(update, context)
+    elif command == 'config':
+        await config_group_menu(update, context)
+
+# Funções de moderação (adaptadas do código anterior)
+async def warn_user(update: Update, context: CallbackContext):
+    """Adverte um usuário"""
+    # Implementação similar à versão anterior
+    pass
+
+async def mute_user(update: Update, context: CallbackContext):
+    """Silencia um usuário"""
+    # Implementação similar à versão anterior
+    pass
+
+async def ban_user(update: Update, context: CallbackContext):
+    """Bane um usuário"""
+    # Implementação similar à versão anterior
+    pass
+
+# Funções de configuração
+async def config_group_menu(update: Update, context: CallbackContext):
+    """Mostra menu de configuração do grupo"""
+    query = update.callback_query
+    if query:
+        chat_id = int(query.data.split('_')[2])
+    else:
+        chat_id = update.effective_chat.id
     
     try:
-        chat = context.bot.get_chat(chat_id)
-        chat_title = chat.title
+        chat = await context.bot.get_chat(chat_id)
+        settings = context.bot_data['group_manager'].load_chat_data(chat_id)['settings']
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(f"🔗 Links: {'✅' if settings['block_links'] else '❌'}", 
+                    callback_data=f"toggle_links_{chat_id}"),
+                InlineKeyboardButton(f"↩️ Encaminhamentos: {'✅' if settings['block_forwards'] else '❌'}", 
+                    callback_data=f"toggle_forwards_{chat_id}")
+            ],
+            [
+                InlineKeyboardButton(f"🤖 Bots: {'✅' if settings['block_bots'] else '❌'}", 
+                    callback_data=f"toggle_bots_{chat_id}"),
+                InlineKeyboardButton(f"👋 Boas-vindas: {'✅' if settings['welcome_enabled'] else '❌'}", 
+                    callback_data=f"toggle_welcome_{chat_id}")
+            ]
+        ]
+        
+        text = f"⚙️ *Configurações do {chat.title}* ⚙️\n\nSelecione uma opção:"
+        
+        if query:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
     except Exception as e:
-        logger.error(f"Erro ao obter informações do chat: {e}")
-        chat_title = f"Grupo (ID: {chat_id})"
-    
-    settings = get_group_settings(int(chat_id))
-    
-    keyboard = [
-        [
-            InlineKeyboardButton(f"🔗 Links: {'✅' if settings['block_links'] else '❌'}", 
-                callback_data=f"toggle_links_{chat_id}"),
-            InlineKeyboardButton(f"↩️ Encaminhamentos: {'✅' if settings['block_forwards'] else '❌'}", 
-                callback_data=f"toggle_forwards_{chat_id}")
-        ],
-        [
-            InlineKeyboardButton(f"🤖 Bots: {'✅' if settings['block_bots'] else '❌'}", 
-                callback_data=f"toggle_bots_{chat_id}"),
-            InlineKeyboardButton(f"👋 Boas-vindas: {'✅' if settings['welcome_enabled'] else '❌'}", 
-                callback_data=f"toggle_welcome_{chat_id}")
-        ],
-        [InlineKeyboardButton("🔙 Voltar", callback_data="list_groups")]
-    ]
-    
-    text = (
-        f"⚙️ *Configurações do Grupo* ⚙️\n\n"
-        f"📛 Nome: {chat_title}\n"
-        f"🆔 ID: `{chat_id}`\n\n"
-        f"Escolha o que deseja modificar:"
-    )
-    
-    query.edit_message_text(
-        text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-def toggle_setting(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    
-    action, chat_id = query.data.split('_')[1], query.data.split('_')[2]
-    settings = get_group_settings(int(chat_id))
-    
-    settings[action] = not settings[action]
-    group_settings[chat_id] = settings
-    save_data(DATABASE['GROUP_SETTINGS_FILE'], group_settings)
-    
-    config_group_menu(update, context)
-
-# MAIN FUNCTION ---------------------------------------------------
+        logger.error(f"Erro no menu de configuração: {e}")
 
 def main():
+    """Função principal"""
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
-
-    # Registrar handler de erros
-    dp.add_error_handler(error_handler)
-
-    # Handlers de grupo
-    dp.add_handler(MessageHandler(
-        Filters.status_update.new_chat_members,
-        bot_added_to_group
-    ))
     
-    # Handlers de comandos
-    dp.add_handler(CommandHandler("start", start_private))
+    # Inicializa o gerenciador de grupos
+    db = Database()  # Classe fictícia - implemente conforme necessário
+    updater.bot_data['group_manager'] = GroupManager(updater.bot, db, BOT_CONFIG)
     
-    # Handlers de callback
-    dp.add_handler(CallbackQueryHandler(list_groups, pattern='^list_groups$'))
+    # Handlers
+    dp.add_handler(MessageHandler(Filters.all, handle_message))
     dp.add_handler(CallbackQueryHandler(config_group_menu, pattern='^config_group_'))
-    dp.add_handler(CallbackQueryHandler(toggle_setting, pattern='^toggle_'))
-    dp.add_handler(CallbackQueryHandler(start_private, pattern='^main_menu$'))
     
-    # Configurar comandos
-    commands = [
-        BotCommand("start", "Abrir painel de controle"),
-        BotCommand("warn", "Advertir usuário"),
-        BotCommand("mute", "Silenciar usuário"),
-        BotCommand("ban", "Banir usuário")
-    ]
-    updater.bot.set_my_commands(commands)
+    # Comandos
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(CommandHandler("warn", warn_user))
+    dp.add_handler(CommandHandler("mute", mute_user))
+    dp.add_handler(CommandHandler("ban", ban_user))
+    dp.add_handler(CommandHandler("config", config_group_menu))
     
-    # Iniciar bot
+    # Inicia o bot
     if RENDER_CONFIG['WEBHOOK_URL']:
         updater.start_webhook(
             listen=RENDER_CONFIG['HOST'],
