@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+from typing import Dict, Optional  # Adicionado import para Dict
 from telegram import (
     Update,
     InlineKeyboardButton,
