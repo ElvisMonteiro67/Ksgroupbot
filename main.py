@@ -98,7 +98,7 @@ def send_enhanced_welcome(update: Update, context: CallbackContext, new_member):
     chat_id = update.effective_chat.id
     settings = get_group_settings(chat_id)
     
-    welcome_msg = welcome_messages.get(str(chat_id), (
+    default_welcome = (
         f"🌟 Bem-vindo(a), {new_member.mention_html()}! 🌟\n\n"
         "Você acabou de entrar em um grupo especial! Aqui estão algumas coisas que posso fazer:\n"
         "✅ Manter o grupo seguro e organizado\n"
@@ -107,6 +107,8 @@ def send_enhanced_welcome(update: Update, context: CallbackContext, new_member):
         "⚡ Gerenciar usuários problemáticos\n\n"
         "Por favor, leia as regras abaixo e aproveite sua estadia!"
     )
+    
+    welcome_msg = welcome_messages.get(str(chat_id), default_welcome)
     
     # Construir teclado de botões
     buttons = []
@@ -219,22 +221,6 @@ def admin_panel(update: Update, context: CallbackContext):
     )
     delete_message(update, context)
 
-# Handler para botões
-def button_handler(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    
-    data = query.data
-    chat_id = query.message.chat_id
-    
-    if data == "setup_welcome":
-        setup_welcome_callback(update, context)
-    elif data == "group_settings":
-        show_group_settings(update, context)
-    elif data == "manage_verified":
-        manage_verified_users(update, context)
-    # Adicione outros handlers para botões aqui
-
 def show_group_settings(update: Update, context: CallbackContext):
     query = update.callback_query
     chat_id = str(query.message.chat_id)
@@ -269,6 +255,39 @@ def show_group_settings(update: Update, context: CallbackContext):
         parse_mode=ParseMode.MARKDOWN
     )
 
+def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    
+    data = query.data
+    
+    if data == "setup_welcome":
+        setup_welcome_callback(update, context)
+    elif data == "group_settings":
+        show_group_settings(update, context)
+    elif data == "manage_verified":
+        query.edit_message_text("Funcionalidade de gerenciar usuários verificados será implementada em breve!")
+    elif data == "toggle_delete":
+        toggle_setting(update, context, 'delete_old_welcome')
+    elif data == "toggle_links":
+        toggle_setting(update, context, 'block_links')
+    elif data == "toggle_forwards":
+        toggle_setting(update, context, 'block_forwards')
+    elif data == "back_to_main":
+        start_private_chat(update, context)
+
+def toggle_setting(update: Update, context: CallbackContext, setting_name: str):
+    query = update.callback_query
+    chat_id = str(query.message.chat_id)
+    
+    if chat_id not in group_settings:
+        group_settings[chat_id] = get_group_settings(chat_id)
+    
+    group_settings[chat_id][setting_name] = not group_settings[chat_id].get(setting_name, False)
+    save_data(GROUP_SETTINGS_FILE, group_settings)
+    
+    show_group_settings(update, context)
+
 def main():
     # Criar o Updater e passar o token do bot
     updater = Updater(TOKEN, use_context=True)
@@ -300,9 +319,6 @@ def main():
     # Handler para novos membros
     dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, 
                                lambda u,c: [send_enhanced_welcome(u,c, member) for member in u.message.new_chat_members]))
-
-    # Handler para mensagens em grupos
-    dp.add_handler(MessageHandler(Filters.text & Filters.chat_type.groups, filter_messages))
 
     # Iniciar o bot
     updater.start_polling()
