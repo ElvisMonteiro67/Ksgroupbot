@@ -77,7 +77,7 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username VARCHAR(255),
             full_name VARCHAR(255),
-            status VARCHAR(50) DEFAULT 'pending')
+            status VARCHAR(50) DEFAULT 'pending'
         )
         """,
         """
@@ -88,7 +88,7 @@ def init_db():
             request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status VARCHAR(50) DEFAULT 'pending',
             reviewed_by BIGINT,
-            review_date TIMESTAMP)
+            review_date TIMESTAMP
         )
         """
     )
@@ -440,17 +440,8 @@ def add_group_admin_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text("❌ Você não tem permissão para executar este comando.")
         return
 
-    if len(context.args) < 1:
-        update.message.reply_text(
-            "❌ Uso incorreto. Você pode:\n"
-            "1. Responder a mensagem do usuário com /addgroupadmin [ID_DO_GRUPO]\n"
-            "2. Usar /addgroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
-            "3. Usar /addgroupadmin @username [ID_GRUPO]"
-        )
-        return
-
     # Se for reply, o primeiro argumento é o chat_id
-    if not context.args or (len(context.args) == 1 and update.message.reply_to_message:
+    if not context.args or (len(context.args) == 1 and update.message.reply_to_message):
         if not update.message.reply_to_message:
             update.message.reply_text("❌ Você precisa responder a mensagem do usuário ou fornecer ID/@username e ID do grupo.")
             return
@@ -491,15 +482,6 @@ def remove_group_admin_command(update: Update, context: CallbackContext) -> None
     """Remove um administrador de grupo."""
     if not is_bot_admin(update.effective_user.id):
         update.message.reply_text("❌ Você não tem permissão para executar este comando.")
-        return
-
-    if len(context.args) < 1:
-        update.message.reply_text(
-            "❌ Uso incorreto. Você pode:\n"
-            "1. Responder a mensagem do usuário com /removegroupadmin [ID_DO_GRUPO]\n"
-            "2. Usar /removegroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
-            "3. Usar /removegroupadmin @username [ID_GRUPO]"
-        )
         return
 
     # Se for reply, o primeiro argumento é o chat_id
