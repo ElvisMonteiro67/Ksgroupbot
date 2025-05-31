@@ -58,13 +58,17 @@ def init_db():
     commands = (
         """
         CREATE TABLE IF NOT EXISTS bot_admins (
-            user_id BIGINT PRIMARY KEY
+            user_id BIGINT PRIMARY KEY,
+            username VARCHAR(255),
+            full_name VARCHAR(255)
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS group_admins (
             user_id BIGINT,
             chat_id BIGINT,
+            username VARCHAR(255),
+            full_name VARCHAR(255),
             PRIMARY KEY (user_id, chat_id)
         )
         """,
@@ -73,7 +77,7 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username VARCHAR(255),
             full_name VARCHAR(255),
-            status VARCHAR(50) DEFAULT 'pending'
+            status VARCHAR(50) DEFAULT 'pending')
         )
         """,
         """
@@ -84,7 +88,7 @@ def init_db():
             request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status VARCHAR(50) DEFAULT 'pending',
             reviewed_by BIGINT,
-            review_date TIMESTAMP
+            review_date TIMESTAMP)
         )
         """
     )
@@ -117,14 +121,33 @@ def is_bot_admin(user_id: int) -> bool:
         if conn is not None:
             conn.close()
 
-def add_group_admin(user_id: int, chat_id: int) -> bool:
+def add_bot_admin(user_id: int, username: str, full_name: str) -> bool:
+    """Adiciona um administrador do bot."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO bot_admins (user_id, username, full_name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (user_id, username, full_name)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Erro ao adicionar admin do bot: {e}")
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+def add_group_admin(user_id: int, chat_id: int, username: str, full_name: str) -> bool:
     """Adiciona um administrador de grupo."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO group_admins (user_id, chat_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            (user_id, chat_id)
+            """INSERT INTO group_admins (user_id, chat_id, username, full_name) 
+            VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+            (user_id, chat_id, username, full_name)
         )
         conn.commit()
         return cur.rowcount > 0
@@ -156,42 +179,115 @@ def add_verified_user(user_id: int, username: str, full_name: str) -> bool:
         if conn is not None:
             conn.close()
 
-def create_verification_request(user_id: int, video_url: str) -> bool:
-    """Cria uma solicitação de verificação."""
+def remove_verified_user(user_id: int) -> bool:
+    """Remove um usuário verificado."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO verification_requests (user_id, video_url) 
-            VALUES (%s, %s)""",
-            (user_id, video_url)
+            "DELETE FROM verified_users WHERE user_id = %s",
+            (user_id,)
         )
         conn.commit()
         return cur.rowcount > 0
     except Exception as e:
-        logger.error(f"Erro ao criar solicitação de verificação: {e}")
+        logger.error(f"Erro ao remover usuário verificado: {e}")
         return False
     finally:
         if conn is not None:
             conn.close()
 
+def remove_group_admin(user_id: int, chat_id: int) -> bool:
+    """Remove um administrador de grupo."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM group_admins WHERE user_id = %s AND chat_id = %s",
+            (user_id, chat_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Erro ao remover admin de grupo: {e}")
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+def get_user_info(context: CallbackContext, user_ref: str, chat_id: int = None):
+    """Obtém informações do usuário por ID, @username ou resposta a mensagem."""
+    try:
+        # Se for uma resposta a mensagem
+        if user_ref == 'reply':
+            if not context.message.reply_to_message:
+                return None
+            user = context.message.reply_to_message.from_user
+            return user.id, user.username, user.full_name
+        
+        # Se for um ID numérico
+        if user_ref.isdigit():
+            user_id = int(user_ref)
+            user = context.bot.get_chat(user_id)
+            return user.id, user.username, user.full_name
+        
+        # Se for um @username (remove o @ se presente)
+        if user_ref.startswith('@'):
+            user_ref = user_ref[1:]
+        
+        # Tenta encontrar por username (só funciona se o usuário tiver iniciado chat com o bot)
+        try:
+            user = context.bot.get_chat(user_ref)
+            return user.id, user.username, user.full_name
+        except TelegramError:
+            pass
+        
+        # Se estiver em um grupo, tenta encontrar pelo username
+        if chat_id:
+            try:
+                member = context.bot.get_chat_member(chat_id, user_ref)
+                return member.user.id, member.user.username, member.user.full_name
+            except TelegramError:
+                pass
+        
+        return None
+    except Exception as e:
+        logger.error(f"Erro ao obter informações do usuário: {e}")
+        return None
+
 # Comandos do bot
 def start(update: Update, context: CallbackContext) -> None:
     """Envia mensagem de boas-vindas quando o comando /start é acionado."""
     if update.effective_chat.type == "private":
-        # Mensagem privada com botões
-        keyboard = [
-            [InlineKeyboardButton("Seja uma Verificada", callback_data='be_verified')],
-            [InlineKeyboardButton("Sou um Admin", callback_data='i_am_admin')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_message = (
-            "👋 Olá! Eu sou o KSgroupbot, seu assistente para a KS Entretenimento.\n\n"
-            "🔹 Se você deseja se tornar uma conta VERIFICADA, clique no botão abaixo.\n"
-            "🔹 Se você é um ADMINISTRADOR, clique no botão correspondente."
-        )
-        update.message.reply_text(welcome_message, reply_markup=reply_markup)
+        if is_bot_admin(update.effective_user.id):
+            # Menu para administradores do bot
+            keyboard = [
+                [InlineKeyboardButton("Adicionar Verificada", callback_data='admin_add_verified')],
+                [InlineKeyboardButton("Remover Verificada", callback_data='admin_remove_verified')],
+                [InlineKeyboardButton("Adicionar Admin Grupo", callback_data='admin_add_group_admin')],
+                [InlineKeyboardButton("Remover Admin Grupo", callback_data='admin_remove_group_admin')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_message = (
+                "👑 Olá administrador do bot!\n\n"
+                "Escolha uma opção abaixo para gerenciar as listas:"
+            )
+            update.message.reply_text(welcome_message, reply_markup=reply_markup)
+        else:
+            # Menu para usuários normais
+            keyboard = [
+                [InlineKeyboardButton("Seja uma Verificada", callback_data='be_verified')],
+                [InlineKeyboardButton("Sou um Admin", callback_data='i_am_admin')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_message = (
+                "👋 Olá! Eu sou o KSgroupbot, seu assistente para a KS Entretenimento.\n\n"
+                "🔹 Se você deseja se tornar uma conta VERIFICADA, clique no botão abaixo.\n"
+                "🔹 Se você é um ADMINISTRADOR, clique no botão correspondente."
+            )
+            update.message.reply_text(welcome_message, reply_markup=reply_markup)
     else:
         # Mensagem em grupo
         welcome_message = (
@@ -216,6 +312,7 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "⏳ Em breve algum administrador avaliará sua solicitação!"
         )
         query.edit_message_text(text=response)
+    
     elif query.data == 'i_am_admin':
         response = (
             "👑 Você é um administrador?\n\n"
@@ -223,55 +320,276 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "suas permissões de administrador."
         )
         query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_add_verified':
+        response = (
+            "👑 Adicionar conta verificada:\n\n"
+            "Você pode adicionar de três formas:\n"
+            "1. Respondendo a mensagem do usuário com /addverified\n"
+            "2. Usando /addverified [ID_DO_USUÁRIO]\n"
+            "3. Usando /addverified @username\n\n"
+            "Exemplo:\n"
+            "/addverified 123456789\n"
+            "ou\n"
+            "/addverified @username"
+        )
+        query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_remove_verified':
+        response = (
+            "👑 Remover conta verificada:\n\n"
+            "Você pode remover de três formas:\n"
+            "1. Respondendo a mensagem do usuário com /removeverified\n"
+            "2. Usando /removeverified [ID_DO_USUÁRIO]\n"
+            "3. Usando /removeverified @username\n\n"
+            "Exemplo:\n"
+            "/removeverified 123456789\n"
+            "ou\n"
+            "/removeverified @username"
+        )
+        query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_add_group_admin':
+        response = (
+            "👑 Adicionar administrador de grupo:\n\n"
+            "Você pode adicionar de três formas:\n"
+            "1. Respondendo a mensagem do usuário com /addgroupadmin [ID_DO_GRUPO]\n"
+            "2. Usando /addgroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
+            "3. Usando /addgroupadmin @username [ID_GRUPO]\n\n"
+            "Exemplo:\n"
+            "/addgroupadmin 123456789 -100987654321\n"
+            "ou\n"
+            "/addgroupadmin @username -100987654321"
+        )
+        query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_remove_group_admin':
+        response = (
+            "👑 Remover administrador de grupo:\n\n"
+            "Você pode remover de três formas:\n"
+            "1. Respondendo a mensagem do usuário com /removegroupadmin [ID_DO_GRUPO]\n"
+            "2. Usando /removegroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
+            "3. Usando /removegroupadmin @username [ID_GRUPO]\n\n"
+            "Exemplo:\n"
+            "/removegroupadmin 123456789 -100987654321\n"
+            "ou\n"
+            "/removegroupadmin @username -100987654321"
+        )
+        query.edit_message_text(text=response)
 
-def set_group_admin(update: Update, context: CallbackContext) -> None:
-    """Define um usuário como administrador de grupo."""
-    if not is_bot_admin(update.effective_user.id):
-        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
-        return
-
-    if len(context.args) < 2:
-        update.message.reply_text("❌ Uso: /setgroupadmin [ID_USUARIO] [ID_GRUPO]")
-        return
-
-    try:
-        user_id = int(context.args[0])
-        chat_id = int(context.args[1])
-        
-        if add_group_admin(user_id, chat_id):
-            update.message.reply_text(
-                f"✅ Usuário {user_id} adicionado como administrador do grupo {chat_id}.\n"
-                f"Ele receberá permissões de admin quando entrar no grupo."
-            )
-        else:
-            update.message.reply_text(f"ℹ️ O usuário {user_id} já é administrador do grupo {chat_id}.")
-    except ValueError:
-        update.message.reply_text("❌ IDs inválidos. Forneça números válidos.")
-
-def add_verified(update: Update, context: CallbackContext) -> None:
+def add_verified_command(update: Update, context: CallbackContext) -> None:
     """Adiciona um usuário à lista de verificados."""
     if not is_bot_admin(update.effective_user.id):
         update.message.reply_text("❌ Você não tem permissão para executar este comando.")
         return
 
+    user_ref = context.args[0] if context.args else 'reply'
+    user_info = get_user_info(context, user_ref)
+    
+    if not user_info:
+        update.message.reply_text(
+            "❌ Não foi possível identificar o usuário.\n"
+            "Você pode:\n"
+            "1. Responder a mensagem do usuário com /addverified\n"
+            "2. Usar /addverified [ID_DO_USUÁRIO]\n"
+            "3. Usar /addverified @username"
+        )
+        return
+
+    user_id, username, full_name = user_info
+    
+    if add_verified_user(user_id, username, full_name):
+        update.message.reply_text(
+            f"✅ Usuário {full_name} (@{username}) adicionado como verificado.\n"
+            f"Ele receberá o status 'Verificada' quando entrar em qualquer grupo."
+        )
+    else:
+        update.message.reply_text(f"ℹ️ Usuário {full_name} já está na lista de verificados.")
+
+def remove_verified_command(update: Update, context: CallbackContext) -> None:
+    """Remove um usuário da lista de verificados."""
+    if not is_bot_admin(update.effective_user.id):
+        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        return
+
+    user_ref = context.args[0] if context.args else 'reply'
+    user_info = get_user_info(context, user_ref)
+    
+    if not user_info:
+        update.message.reply_text(
+            "❌ Não foi possível identificar o usuário.\n"
+            "Você pode:\n"
+            "1. Responder a mensagem do usuário com /removeverified\n"
+            "2. Usar /removeverified [ID_DO_USUÁRIO]\n"
+            "3. Usar /removeverified @username"
+        )
+        return
+
+    user_id, username, full_name = user_info
+    
+    if remove_verified_user(user_id):
+        update.message.reply_text(
+            f"✅ Usuário {full_name} (@{username}) removido da lista de verificados."
+        )
+    else:
+        update.message.reply_text(f"ℹ️ Usuário {full_name} não estava na lista de verificados.")
+
+def add_group_admin_command(update: Update, context: CallbackContext) -> None:
+    """Adiciona um administrador de grupo."""
+    if not is_bot_admin(update.effective_user.id):
+        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        return
+
     if len(context.args) < 1:
-        update.message.reply_text("❌ Uso: /addverified [ID_USUARIO]")
+        update.message.reply_text(
+            "❌ Uso incorreto. Você pode:\n"
+            "1. Responder a mensagem do usuário com /addgroupadmin [ID_DO_GRUPO]\n"
+            "2. Usar /addgroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
+            "3. Usar /addgroupadmin @username [ID_GRUPO]"
+        )
+        return
+
+    # Se for reply, o primeiro argumento é o chat_id
+    if not context.args or (len(context.args) == 1 and update.message.reply_to_message:
+        if not update.message.reply_to_message:
+            update.message.reply_text("❌ Você precisa responder a mensagem do usuário ou fornecer ID/@username e ID do grupo.")
+            return
+        
+        chat_id = context.args[0]
+        user_info = get_user_info(context, 'reply')
+    else:
+        # Se não for reply, espera user_ref e chat_id
+        if len(context.args) < 2:
+            update.message.reply_text("❌ Você precisa fornecer ID/@username do usuário e ID do grupo.")
+            return
+        
+        user_ref = context.args[0]
+        chat_id = context.args[1]
+        user_info = get_user_info(context, user_ref)
+
+    try:
+        chat_id = int(chat_id)
+    except ValueError:
+        update.message.reply_text("❌ ID do grupo deve ser um número.")
+        return
+
+    if not user_info:
+        update.message.reply_text("❌ Não foi possível identificar o usuário.")
+        return
+
+    user_id, username, full_name = user_info
+    
+    if add_group_admin(user_id, chat_id, username, full_name):
+        update.message.reply_text(
+            f"✅ Usuário {full_name} (@{username}) adicionado como administrador do grupo {chat_id}.\n"
+            f"Ele receberá permissões de admin quando entrar no grupo."
+        )
+    else:
+        update.message.reply_text(f"ℹ️ Usuário {full_name} já é administrador do grupo {chat_id}.")
+
+def remove_group_admin_command(update: Update, context: CallbackContext) -> None:
+    """Remove um administrador de grupo."""
+    if not is_bot_admin(update.effective_user.id):
+        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        return
+
+    if len(context.args) < 1:
+        update.message.reply_text(
+            "❌ Uso incorreto. Você pode:\n"
+            "1. Responder a mensagem do usuário com /removegroupadmin [ID_DO_GRUPO]\n"
+            "2. Usar /removegroupadmin [ID_USUÁRIO] [ID_GRUPO]\n"
+            "3. Usar /removegroupadmin @username [ID_GRUPO]"
+        )
+        return
+
+    # Se for reply, o primeiro argumento é o chat_id
+    if len(context.args) == 1 and update.message.reply_to_message:
+        chat_id = context.args[0]
+        user_info = get_user_info(context, 'reply')
+    else:
+        # Se não for reply, espera user_ref e chat_id
+        if len(context.args) < 2:
+            update.message.reply_text("❌ Você precisa fornecer ID/@username do usuário e ID do grupo.")
+            return
+        
+        user_ref = context.args[0]
+        chat_id = context.args[1]
+        user_info = get_user_info(context, user_ref)
+
+    try:
+        chat_id = int(chat_id)
+    except ValueError:
+        update.message.reply_text("❌ ID do grupo deve ser um número.")
+        return
+
+    if not user_info:
+        update.message.reply_text("❌ Não foi possível identificar o usuário.")
+        return
+
+    user_id, username, full_name = user_info
+    
+    if remove_group_admin(user_id, chat_id):
+        update.message.reply_text(
+            f"✅ Usuário {full_name} (@{username}) removido como administrador do grupo {chat_id}."
+        )
+    else:
+        update.message.reply_text(f"ℹ️ Usuário {full_name} não era administrador do grupo {chat_id}.")
+
+def list_verified_command(update: Update, context: CallbackContext) -> None:
+    """Lista todos os usuários verificados."""
+    if not is_bot_admin(update.effective_user.id):
+        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
         return
 
     try:
-        user_id = int(context.args[0])
-        # Obter informações do usuário
-        user = context.bot.get_chat(user_id)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, username, full_name FROM verified_users WHERE status = 'approved'")
+        verified_users = cur.fetchall()
         
-        if add_verified_user(user_id, user.username, user.full_name):
-            update.message.reply_text(
-                f"✅ Usuário {user.full_name} (@{user.username}) adicionado como verificado.\n"
-                f"Ele receberá o status 'Verificada' quando entrar em qualquer grupo."
-            )
-        else:
-            update.message.reply_text(f"ℹ️ Usuário {user_id} já está na lista de verificados.")
-    except (ValueError, TelegramError) as e:
-        update.message.reply_text(f"❌ Erro: {str(e)}")
+        if not verified_users:
+            update.message.reply_text("ℹ️ Não há usuários verificados no momento.")
+            return
+
+        response = ["✅ Lista de usuários verificados:\n"]
+        for user_id, username, full_name in verified_users:
+            response.append(f"- {full_name} (@{username}) - ID: {user_id}")
+        
+        update.message.reply_text("\n".join(response))
+    except Exception as e:
+        logger.error(f"Erro ao listar usuários verificados: {e}")
+        update.message.reply_text("❌ Ocorreu um erro ao listar os usuários verificados.")
+    finally:
+        if conn is not None:
+            conn.close()
+
+def list_group_admins_command(update: Update, context: CallbackContext) -> None:
+    """Lista todos os administradores de grupo."""
+    if not is_bot_admin(update.effective_user.id):
+        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        return
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, chat_id, username, full_name FROM group_admins")
+        group_admins = cur.fetchall()
+        
+        if not group_admins:
+            update.message.reply_text("ℹ️ Não há administradores de grupo configurados no momento.")
+            return
+
+        response = ["👑 Lista de administradores de grupo:\n"]
+        for user_id, chat_id, username, full_name in group_admins:
+            response.append(f"- {full_name} (@{username}) - ID: {user_id} no grupo {chat_id}")
+        
+        update.message.reply_text("\n".join(response))
+    except Exception as e:
+        logger.error(f"Erro ao listar administradores de grupo: {e}")
+        update.message.reply_text("❌ Ocorreu um erro ao listar os administradores de grupo.")
+    finally:
+        if conn is not None:
+            conn.close()
 
 def handle_verification_keywords(update: Update, context: CallbackContext) -> None:
     """Responde a mensagens contendo palavras-chave sobre verificação."""
@@ -410,10 +728,21 @@ def main() -> None:
         cur = conn.cursor()
         for admin_id in admin_ids:
             if admin_id.strip().isdigit():
-                cur.execute(
-                    "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-                    (int(admin_id.strip()),)
-                )
+                admin_id_int = int(admin_id.strip())
+                # Obtém informações do admin
+                try:
+                    updater = Updater(token)
+                    user = updater.bot.get_chat(admin_id_int)
+                    cur.execute(
+                        "INSERT INTO bot_admins (user_id, username, full_name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                        (admin_id_int, user.username, user.full_name)
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
+                    cur.execute(
+                        "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                        (admin_id_int,)
+                    )
         conn.commit()
     except Exception as e:
         logger.error(f"Erro ao configurar admins do bot: {e}")
@@ -426,8 +755,12 @@ def main() -> None:
 
     # Handlers de comandos
     dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("setgroupadmin", set_group_admin))
-    dispatcher.add_handler(CommandHandler("addverified", add_verified))
+    dispatcher.add_handler(CommandHandler("addverified", add_verified_command))
+    dispatcher.add_handler(CommandHandler("removeverified", remove_verified_command))
+    dispatcher.add_handler(CommandHandler("addgroupadmin", add_group_admin_command))
+    dispatcher.add_handler(CommandHandler("removegroupadmin", remove_group_admin_command))
+    dispatcher.add_handler(CommandHandler("listverified", list_verified_command))
+    dispatcher.add_handler(CommandHandler("listgroupadmins", list_group_admins_command))
     
     # Handlers de mensagens
     dispatcher.add_handler(MessageHandler(
