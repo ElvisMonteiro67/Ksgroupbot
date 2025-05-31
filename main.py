@@ -139,7 +139,7 @@ def init_db():
         if conn is not None:
             conn.close()
 
-# Funções auxiliares de banco de dados
+# Funções auxiliares de banco de dados (mantidas exatamente como estavam)
 def is_bot_admin(user_id: int) -> bool:
     """Verifica se o usuário é administrador do bot."""
     try:
@@ -290,7 +290,7 @@ def get_user_info(context: CallbackContext, user_ref: str, chat_id: int = None):
         logger.error(f"Erro ao obter informações do usuário: {e}")
         return None
 
-# Comandos do bot
+# Comandos do bot (mantidos exatamente como estavam)
 def start(update: Update, context: CallbackContext) -> None:
     """Envia mensagem de boas-vindas quando o comando /start é acionado."""
     if update.effective_chat.type == "private":
@@ -739,10 +739,35 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
                 logger.error(f"Erro ao promover verificado: {e}")
 
 def error_handler(update: Update, context: CallbackContext) -> None:
-    """Lida com erros."""
-    logger.error(f"Update {update} caused error {context.error}")
-    if update.effective_message:
-        update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
+    """Lida com erros de forma segura."""
+    try:
+        error_msg = str(context.error) if context.error else "Erro desconhecido"
+        logger.error(f"Erro no bot: {error_msg}")
+        
+        # Verifica se o update é válido antes de tentar responder
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
+    except Exception as e:
+        logger.error(f"Erro no handler de erros: {e}")
+
+def setup_bot(token: str) -> Updater:
+    """Configura e retorna a instância do bot com tratamento de erros aprimorado."""
+    updater = Updater(token, use_context=True)
+    
+    # Configura um handler para o erro específico de conflito
+    def error_callback(update: Update, context: CallbackContext):
+        try:
+            if isinstance(context.error, TelegramError) and "terminated by other getUpdates request" in str(context.error):
+                logger.warning("Outra instância do bot está em execução. Esta instância será encerrada.")
+                os._exit(1)  # Encerra completamente o processo
+            else:
+                error_handler(update, context)
+        except Exception as e:
+            logger.error(f"Erro no handler de erro: {e}")
+
+    dispatcher = updater.dispatcher
+    dispatcher.add_error_handler(error_callback)
+    return updater
 
 def main() -> None:
     """Inicia o bot."""
@@ -764,7 +789,6 @@ def main() -> None:
             if admin_id.strip().isdigit():
                 admin_id_int = int(admin_id.strip())
                 try:
-                    # Cria uma instância temporária do bot para obter informações
                     temp_bot = Bot(token=token)
                     try:
                         user = temp_bot.get_chat(admin_id_int)
@@ -779,7 +803,6 @@ def main() -> None:
                         )
                     except TelegramError as e:
                         logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
-                        # Insere apenas o ID se não conseguir obter informações
                         cur.execute(
                             "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
                             (admin_id_int,)
@@ -790,15 +813,15 @@ def main() -> None:
         conn.commit()
     except Exception as e:
         logger.error(f"Erro ao configurar admins do bot: {e}")
-        # Tenta continuar mesmo com erro na configuração dos admins
     finally:
         if conn is not None:
             conn.close()
 
-    updater = Updater(token)
+    # Configura o bot com tratamento de erros aprimorado
+    updater = setup_bot(token)
     dispatcher = updater.dispatcher
 
-    # Handlers de comandos
+    # Handlers de comandos (mantidos exatamente como estavam)
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("addverified", add_verified_command))
     dispatcher.add_handler(CommandHandler("removeverified", remove_verified_command))
@@ -807,25 +830,26 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("listverified", list_verified_command))
     dispatcher.add_handler(CommandHandler("listgroupadmins", list_group_admins_command))
     
-    # Handlers de mensagens
+    # Handlers de mensagens (mantidos exatamente como estavam)
     dispatcher.add_handler(MessageHandler(
         Filters.text & (~Filters.command), 
         handle_verification_keywords
     ))
     
-    # Handler para botões
+    # Handler para botões (mantido exatamente como estava)
     dispatcher.add_handler(CallbackQueryHandler(button_handler))
     
-    # Handler para novos membros
+    # Handler para novos membros (mantido exatamente como estava)
     dispatcher.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
-    
-    # Handler de erros
-    dispatcher.add_error_handler(error_handler)
 
-    # Inicia o bot
-    updater.start_polling()
-    logger.info("Bot iniciado e aguardando mensagens...")
-    updater.idle()
+    # Inicia o bot com tratamento de erro para conflito de instâncias
+    try:
+        updater.start_polling()
+        logger.info("Bot iniciado e aguardando mensagens...")
+        updater.idle()
+    except Exception as e:
+        logger.error(f"Erro fatal ao iniciar o bot: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
