@@ -2,6 +2,7 @@ import os
 import logging
 import psycopg2
 import sys
+import time
 from typing import Dict, List, Optional
 from telegram import (
     Update,
@@ -20,7 +21,7 @@ from telegram.ext import (
     ChatMemberHandler,
     CallbackQueryHandler,
 )
-from telegram.error import TelegramError, Conflict
+from telegram.error import TelegramError, Conflict, BadRequest
 from urllib.parse import urlparse
 from contextlib import contextmanager
 
@@ -30,6 +31,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Configuração de tentativas
+MAX_RETRIES = 3
+RETRY_DELAY = 5
 
 # Gerenciador de contexto para conexões com o banco de dados
 @contextmanager
@@ -638,28 +643,68 @@ def error_handler(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f'Erro no manipulador de erros: {e}')
 
-def ensure_single_instance(bot_token: str):
+def ensure_single_instance(bot_token: str) -> None:
     """Verifica se não há outra instância do bot em execução."""
     try:
         test_bot = Bot(token=bot_token)
         try:
-            test_bot.get_me()  # Testa a conexão com o Telegram
-        except Conflict:
-            logger.warning("Outra instância do bot já está em execução. Encerrando...")
-            sys.exit(0)  # Encerra o programa normalmente
+            # Testa a conexão com o Telegram
+            test_bot.get_me()
+            
+            # Tenta obter atualizações para verificar conflito
+            updates = test_bot.get_updates(timeout=5)
+            if updates:
+                logger.warning("Outra instância do bot já está em execução. Encerrando...")
+                sys.exit(0)
+                
+        except Conflict as e:
+            logger.warning("Conflito detectado - outra instância em execução. Saindo...")
+            sys.exit(0)
+            
     except Exception as e:
         logger.error(f"Erro ao verificar instância única: {e}")
         raise
 
+def start_bot_with_retry(updater: Updater) -> None:
+    """Inicia o bot com mecanismo de repetição em caso de falha."""
+    retry_count = 0
+    while retry_count < MAX_RETRIES:
+        try:
+            # Verifica se há outra instância em execução
+            ensure_single_instance(updater.bot.token)
+            
+            updater.start_polling(
+                drop_pending_updates=True,
+                timeout=30,
+                allowed_updates=[
+                    'message',
+                    'callback_query',
+                    'chat_member'
+                ]
+            )
+            logger.info("Bot iniciado e aguardando mensagens...")
+            updater.idle()
+            break
+            
+        except Conflict as e:
+            retry_count += 1
+            logger.error(f"Conflito detectado (tentativa {retry_count}/{MAX_RETRIES}): {e}")
+            if retry_count >= MAX_RETRIES:
+                logger.error("Número máximo de tentativas atingido. Encerrando...")
+                raise
+            
+            time.sleep(RETRY_DELAY)
+            
+        except Exception as e:
+            logger.error(f"Erro fatal ao iniciar o bot: {e}")
+            raise
+
 def main() -> None:
-    """Inicia o bot com verificação de instância única."""
+    """Inicia o bot com verificação de instância única e mecanismo de repetição."""
     # Configuração do bot
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
         raise ValueError("Por favor, defina a variável de ambiente TELEGRAM_TOKEN")
-    
-    # Verifica se já existe outra instância em execução
-    ensure_single_instance(token)
     
     # Inicializa o banco de dados
     init_db()
@@ -686,7 +731,7 @@ def main() -> None:
                                 DO UPDATE SET username = EXCLUDED.username, full_name = EXCLUDED.full_name""",
                                 (admin_id_int, username, full_name)
                             )
-                        except TelegramError as e:
+                        except (TelegramError, BadRequest) as e:
                             logger.error(f"Erro ao obter info do admin {admin_id}: {e}")
                             cur.execute(
                                 "INSERT INTO bot_admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
@@ -720,26 +765,7 @@ def main() -> None:
     dispatcher.add_error_handler(error_handler)
 
     # Inicia o bot com tratamento de exceções
-    try:
-        updater.start_polling(
-            drop_pending_updates=True,  # Ignora atualizações pendentes
-            timeout=30,
-            allowed_updates=[
-                'message',
-                'callback_query',
-                'chat_member'
-            ]
-        )
-        logger.info("Bot iniciado e aguardando mensagens...")
-        updater.idle()
-        
-    except Conflict:
-        logger.warning("Conflito detectado durante inicialização. Encerrando...")
-        sys.exit(0)
-        
-    except Exception as e:
-        logger.error(f"Erro fatal ao iniciar o bot: {e}")
-        raise
+    start_bot_with_retry(updater)
 
 if __name__ == '__main__':
     main()
