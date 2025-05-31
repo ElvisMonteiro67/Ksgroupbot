@@ -1,6 +1,7 @@
 import os
 import logging
 import psycopg2
+import sys
 from typing import Dict, List, Optional
 from telegram import (
     Update,
@@ -19,7 +20,7 @@ from telegram.ext import (
     ChatMemberHandler,
     CallbackQueryHandler,
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, Conflict
 from urllib.parse import urlparse
 
 # Configuração básica
@@ -741,43 +742,45 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
 def error_handler(update: Update, context: CallbackContext) -> None:
     """Lida com erros de forma segura."""
     try:
-        error_msg = str(context.error) if context.error else "Erro desconhecido"
-        logger.error(f"Erro no bot: {error_msg}")
+        error = context.error
+        logger.error(f'Erro não tratado: {error}', exc_info=error)
         
-        # Verifica se o update é válido antes de tentar responder
+        # Trata especificamente o erro de conflito
+        if isinstance(error, Conflict) and "terminated by other getUpdates request" in str(error):
+            logger.warning("Conflito detectado - outra instância em execução. Saindo...")
+            sys.exit(0)
+            
+        # Tenta responder ao usuário se possível
         if update and hasattr(update, 'effective_message') and update.effective_message:
             update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
     except Exception as e:
-        logger.error(f"Erro no handler de erros: {e}")
+        logger.error(f'Erro no manipulador de erros: {e}')
 
-def setup_bot(token: str) -> Updater:
-    """Configura e retorna a instância do bot com tratamento de erros aprimorado."""
-    updater = Updater(token, use_context=True)
-    
-    # Configura um handler para o erro específico de conflito
-    def error_callback(update: Update, context: CallbackContext):
+def ensure_single_instance(bot_token: str):
+    """Verifica se não há outra instância do bot em execução."""
+    try:
+        test_bot = Bot(token=bot_token)
         try:
-            if isinstance(context.error, TelegramError) and "terminated by other getUpdates request" in str(context.error):
-                logger.warning("Outra instância do bot está em execução. Esta instância será encerrada.")
-                os._exit(1)  # Encerra completamente o processo
-            else:
-                error_handler(update, context)
-        except Exception as e:
-            logger.error(f"Erro no handler de erro: {e}")
-
-    dispatcher = updater.dispatcher
-    dispatcher.add_error_handler(error_callback)
-    return updater
+            test_bot.get_me()  # Testa a conexão com o Telegram
+        except Conflict:
+            logger.warning("Outra instância do bot já está em execução. Encerrando...")
+            sys.exit(0)  # Encerra o programa normalmente
+    except Exception as e:
+        logger.error(f"Erro ao verificar instância única: {e}")
+        raise
 
 def main() -> None:
-    """Inicia o bot."""
-    # Inicializa o banco de dados
-    init_db()
-    
+    """Inicia o bot com verificação de instância única."""
     # Configuração do bot
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
         raise ValueError("Por favor, defina a variável de ambiente TELEGRAM_TOKEN")
+    
+    # Verifica se já existe outra instância em execução
+    ensure_single_instance(token)
+    
+    # Inicializa o banco de dados
+    init_db()
     
     # Configura administradores do bot
     admin_ids = os.getenv('BOT_ADMINS', '').split(',')
@@ -817,11 +820,19 @@ def main() -> None:
         if conn is not None:
             conn.close()
 
-    # Configura o bot com tratamento de erros aprimorado
-    updater = setup_bot(token)
+    # Configuração do Updater com parâmetros adicionais
+    updater = Updater(
+        token=token,
+        use_context=True,
+        request_kwargs={
+            'read_timeout': 30,
+            'connect_timeout': 30
+        }
+    )
+    
     dispatcher = updater.dispatcher
 
-    # Handlers de comandos (mantidos exatamente como estavam)
+    # Configuração dos handlers (mantida exatamente igual)
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("addverified", add_verified_command))
     dispatcher.add_handler(CommandHandler("removeverified", remove_verified_command))
@@ -829,24 +840,29 @@ def main() -> None:
     dispatcher.add_handler(CommandHandler("removegroupadmin", remove_group_admin_command))
     dispatcher.add_handler(CommandHandler("listverified", list_verified_command))
     dispatcher.add_handler(CommandHandler("listgroupadmins", list_group_admins_command))
-    
-    # Handlers de mensagens (mantidos exatamente como estavam)
-    dispatcher.add_handler(MessageHandler(
-        Filters.text & (~Filters.command), 
-        handle_verification_keywords
-    ))
-    
-    # Handler para botões (mantido exatamente como estava)
+    dispatcher.add_handler(MessageHandler(Filters.text & (~Filters.command), handle_verification_keywords))
     dispatcher.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Handler para novos membros (mantido exatamente como estava)
     dispatcher.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
+    dispatcher.add_error_handler(error_handler)
 
-    # Inicia o bot com tratamento de erro para conflito de instâncias
+    # Inicia o bot com tratamento de exceções
     try:
-        updater.start_polling()
+        updater.start_polling(
+            drop_pending_updates=True,  # Ignora atualizações pendentes
+            timeout=30,
+            allowed_updates=[
+                'message',
+                'callback_query',
+                'chat_member'
+            ]
+        )
         logger.info("Bot iniciado e aguardando mensagens...")
         updater.idle()
+        
+    except Conflict:
+        logger.warning("Conflito detectado durante inicialização. Encerrando...")
+        sys.exit(0)
+        
     except Exception as e:
         logger.error(f"Erro fatal ao iniciar o bot: {e}")
         raise
