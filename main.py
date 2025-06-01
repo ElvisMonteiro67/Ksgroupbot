@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from telegram import (
     Update, 
     InlineKeyboardButton, 
@@ -9,7 +10,6 @@ from telegram.ext import (
     Application,
     CommandHandler, 
     MessageHandler, 
-    CallbackContext, 
     CallbackQueryHandler, 
     ConversationHandler,
     filters,
@@ -350,7 +350,15 @@ async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # CONFIGURAÇÃO PRINCIPAL
 # ==================================================
 
-def main():
+async def post_init(application: Application) -> None:
+    """Executa após a inicialização"""
+    logger.info("Bot iniciado com sucesso!")
+
+async def post_stop(application: Application) -> None:
+    """Executa ao parar o bot"""
+    logger.info("Bot encerrado")
+
+async def main():
     """Função principal"""
     try:
         init_db()
@@ -359,9 +367,11 @@ def main():
         logger.error(f"Falha ao inicializar banco de dados: {e}")
         return
 
-    # Cria a aplicação com configurações específicas para evitar conflitos
+    # Cria a aplicação com configurações para evitar conflitos
     application = Application.builder() \
         .token(BOT_TOKEN) \
+        .post_init(post_init) \
+        .post_stop(post_stop) \
         .read_timeout(30) \
         .write_timeout(30) \
         .connect_timeout(30) \
@@ -381,7 +391,7 @@ def main():
         new_member_check
     ))
 
-    # Conversa interativa com configuração para evitar warnings
+    # Conversa interativa com configuração otimizada
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("manage", manage)],
         states={
@@ -391,19 +401,20 @@ def main():
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_operation)],
-        per_message=False
+        per_message=True  # Alterado para True para evitar o warning
     )
     application.add_handler(conv_handler)
 
     # Adiciona handler de erros
     application.add_error_handler(error_handler)
 
-    # Inicia o bot com polling configurado
-    application.run_polling(
+    # Executa o bot com polling configurado
+    await application.run_polling(
         poll_interval=1.0,
         timeout=30,
         drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
+        allowed_updates=Update.ALL_TYPES,
+        close_loop=False
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -412,13 +423,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     
     # Verifica se é um erro de conflito (outra instância rodando)
     if "Conflict" in str(context.error):
-        logger.warning("Conflito detectado - outra instância pode estar rodando")
-        # Espera um tempo antes de tentar novamente
-        await asyncio.sleep(5)
+        logger.warning("Conflito detectado - aguardando 10 segundos antes de tentar novamente")
+        await asyncio.sleep(10)
+        # Reinicia o polling
+        if context.application.running:
+            await context.application.stop()
+            await asyncio.sleep(1)
+            await context.application.initialize()
+            await context.application.start()
+            await context.application.updater.start_polling()
 
 if __name__ == '__main__':
-    import asyncio
     try:
-        main()
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot encerrado pelo usuário")
     except Exception as e:
         logger.error(f"Falha ao iniciar o bot: {e}")
