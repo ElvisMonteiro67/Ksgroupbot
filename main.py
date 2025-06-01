@@ -14,10 +14,11 @@ from telegram.ext import (
     Updater,
     CommandHandler,
     MessageHandler,
-    Filters,
     CallbackContext,
     ChatMemberHandler,
     CallbackQueryHandler,
+    filters,
+    Application
 )
 from telegram.error import TelegramError
 from urllib.parse import urlparse
@@ -28,6 +29,23 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Variáveis de ambiente necessárias
+REQUIRED_ENV_VARS = {
+    'TELEGRAM_TOKEN': 'Token do bot Telegram',
+    'DATABASE_URL': 'URL de conexão com o PostgreSQL',
+    'BOT_ADMINS': 'IDs dos administradores do bot (separados por vírgula)',
+    'LOG_LEVEL': 'Nível de log (INFO, DEBUG, etc.) - Opcional'
+}
+
+# Verifica variáveis de ambiente
+for var, desc in REQUIRED_ENV_VARS.items():
+    if var not in os.environ and var != 'LOG_LEVEL':
+        raise EnvironmentError(f"Variável de ambiente necessária não encontrada: {var} ({desc})")
+
+# Configura nível de log
+if 'LOG_LEVEL' in os.environ:
+    logging.basicConfig(level=os.environ['LOG_LEVEL'])
 
 # Conexão com o banco de dados
 def get_db_connection():
@@ -89,6 +107,7 @@ def init_db():
         """
     )
     
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -105,6 +124,7 @@ def init_db():
 # Funções auxiliares de banco de dados
 def is_bot_admin(user_id: int) -> bool:
     """Verifica se o usuário é administrador do bot."""
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -119,6 +139,7 @@ def is_bot_admin(user_id: int) -> bool:
 
 def add_group_admin(user_id: int, chat_id: int) -> bool:
     """Adiciona um administrador de grupo."""
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -137,6 +158,7 @@ def add_group_admin(user_id: int, chat_id: int) -> bool:
 
 def add_verified_user(user_id: int, username: str, full_name: str) -> bool:
     """Adiciona um usuário verificado."""
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -158,6 +180,7 @@ def add_verified_user(user_id: int, username: str, full_name: str) -> bool:
 
 def create_verification_request(user_id: int, video_url: str) -> bool:
     """Cria uma solicitação de verificação."""
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -188,7 +211,7 @@ def get_user_id_by_username(bot: Bot, username: str) -> Optional[int]:
         return None
 
 # Comandos do bot
-def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: CallbackContext) -> None:
     """Envia mensagem de boas-vindas quando o comando /start é acionado."""
     if update.effective_chat.type == "private":
         # Mensagem privada com botões
@@ -203,7 +226,7 @@ def start(update: Update, context: CallbackContext) -> None:
             "🔹 Se você deseja se tornar uma conta VERIFICADA, clique no botão abaixo.\n"
             "🔹 Se você é um ADMINISTRADOR, clique no botão correspondente."
         )
-        update.message.reply_text(welcome_message, reply_markup=reply_markup)
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup)
     else:
         # Mensagem em grupo
         welcome_message = (
@@ -211,12 +234,12 @@ def start(update: Update, context: CallbackContext) -> None:
             "📌 Se você mencionar 'verificada' ou variações, eu posso te explicar "
             "como se tornar uma conta verificada pela Agência KS!"
         )
-        update.message.reply_text(welcome_message)
+        await update.message.reply_text(welcome_message)
 
-def button_handler(update: Update, context: CallbackContext) -> None:
+async def button_handler(update: Update, context: CallbackContext) -> None:
     """Lida com cliques nos botões inline."""
     query = update.callback_query
-    query.answer()
+    await query.answer()
 
     if query.data == 'be_verified':
         response = (
@@ -227,7 +250,7 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "3. Inclua uma prévia do seu conteúdo\n\n"
             "⏳ Em breve algum administrador avaliará sua solicitação!"
         )
-        query.edit_message_text(text=response)
+        await query.edit_message_text(text=response)
     elif query.data == 'i_am_admin':
         response = (
             "👑 Você é um administrador?\n\n"
@@ -236,72 +259,72 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "/setgroupadmin @username ID_GRUPO - Define um admin de grupo\n\n"
             "Obs: Você precisa ser admin do bot para usar esses comandos."
         )
-        query.edit_message_text(text=response)
+        await query.edit_message_text(text=response)
 
-def set_group_admin(update: Update, context: CallbackContext) -> None:
+async def set_group_admin(update: Update, context: CallbackContext) -> None:
     """Define um usuário como administrador de grupo."""
     if not is_bot_admin(update.effective_user.id):
-        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        await update.message.reply_text("❌ Você não tem permissão para executar este comando.")
         return
 
     if len(context.args) < 2:
-        update.message.reply_text("❌ Uso: /setgroupadmin @username ID_GRUPO")
+        await update.message.reply_text("❌ Uso: /setgroupadmin @username ID_GRUPO")
         return
 
     try:
         username = context.args[0]
         chat_id = int(context.args[1])
         
-        user_id = get_user_id_by_username(context.bot, username)
+        user_id = await get_user_id_by_username(context.bot, username)
         if not user_id:
-            update.message.reply_text("❌ Não foi possível encontrar o usuário. Verifique se o @username está correto.")
+            await update.message.reply_text("❌ Não foi possível encontrar o usuário. Verifique se o @username está correto.")
             return
         
         if add_group_admin(user_id, chat_id):
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"✅ Usuário @{username} adicionado como administrador do grupo {chat_id}.\n"
                 f"Ele receberá permissões de admin quando entrar no grupo."
             )
         else:
-            update.message.reply_text(f"ℹ️ O usuário @{username} já é administrador do grupo {chat_id}.")
+            await update.message.reply_text(f"ℹ️ O usuário @{username} já é administrador do grupo {chat_id}.")
     except ValueError:
-        update.message.reply_text("❌ ID do grupo inválido. Forneça um número válido.")
+        await update.message.reply_text("❌ ID do grupo inválido. Forneça um número válido.")
 
-def add_verified(update: Update, context: CallbackContext) -> None:
+async def add_verified(update: Update, context: CallbackContext) -> None:
     """Adiciona um usuário à lista de verificados usando @username."""
     if not is_bot_admin(update.effective_user.id):
-        update.message.reply_text("❌ Você não tem permissão para executar este comando.")
+        await update.message.reply_text("❌ Você não tem permissão para executar este comando.")
         return
 
     if len(context.args) < 1:
-        update.message.reply_text("❌ Uso: /addverified @username")
+        await update.message.reply_text("❌ Uso: /addverified @username")
         return
 
     username = context.args[0]
     if not username.startswith('@'):
-        update.message.reply_text("❌ Por favor, forneça um @username válido (começando com @).")
+        await update.message.reply_text("❌ Por favor, forneça um @username válido (começando com @).")
         return
 
     try:
-        user_id = get_user_id_by_username(context.bot, username)
+        user_id = await get_user_id_by_username(context.bot, username)
         if not user_id:
-            update.message.reply_text("❌ Não foi possível encontrar o usuário. Verifique se o @username está correto.")
+            await update.message.reply_text("❌ Não foi possível encontrar o usuário. Verifique se o @username está correto.")
             return
 
         # Obter informações do usuário
-        user = context.bot.get_chat(user_id)
+        user = await context.bot.get_chat(user_id)
         
         if add_verified_user(user_id, user.username, user.full_name):
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"✅ Usuário {user.full_name} (@{user.username}) adicionado como verificado.\n"
                 f"Ele receberá o status 'Verificada' quando entrar em qualquer grupo."
             )
         else:
-            update.message.reply_text(f"ℹ️ Usuário @{user.username} já está na lista de verificados.")
+            await update.message.reply_text(f"ℹ️ Usuário @{user.username} já está na lista de verificados.")
     except TelegramError as e:
-        update.message.reply_text(f"❌ Erro: {str(e)}")
+        await update.message.reply_text(f"❌ Erro: {str(e)}")
 
-def handle_verification_keywords(update: Update, context: CallbackContext) -> None:
+async def handle_verification_keywords(update: Update, context: CallbackContext) -> None:
     """Responde a mensagens contendo palavras-chave sobre verificação."""
     if update.effective_chat.type not in ["group", "supergroup"]:
         return
@@ -318,9 +341,9 @@ def handle_verification_keywords(update: Update, context: CallbackContext) -> No
             "3. Siga as instruções para enviar seu vídeo\n\n"
             "✅ Contas verificadas recebem um selo especial no grupo!"
         )
-        update.message.reply_text(response)
+        await update.message.reply_text(response)
 
-def handle_new_member(update: Update, context: CallbackContext) -> None:
+async def handle_new_member(update: Update, context: CallbackContext) -> None:
     """Lida com novos membros no grupo."""
     if not update.chat_member or not update.chat_member.new_chat_members:
         return
@@ -347,7 +370,7 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
 
         if is_group_admin:
             try:
-                context.bot.promote_chat_member(
+                await context.bot.promote_chat_member(
                     chat_id=chat_id,
                     user_id=user_id,
                     can_change_info=True,
@@ -362,7 +385,7 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
                     can_manage_video_chats=True,
                     can_manage_topics=True
                 )
-                context.bot.send_message(
+                await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"👋 Bem-vindo administrador {member.full_name}! Permissões concedidas."
                 )
@@ -387,7 +410,7 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
 
         if is_verified:
             try:
-                context.bot.promote_chat_member(
+                await context.bot.promote_chat_member(
                     chat_id=chat_id,
                     user_id=user_id,
                     can_change_info=False,
@@ -403,23 +426,23 @@ def handle_new_member(update: Update, context: CallbackContext) -> None:
                     can_manage_topics=False,
                     is_anonymous=False
                 )
-                context.bot.set_chat_administrator_custom_title(
+                await context.bot.set_chat_administrator_custom_title(
                     chat_id=chat_id,
                     user_id=user_id,
                     custom_title="Verificada"
                 )
-                context.bot.send_message(
+                await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"👋 Bem-vindo {member.full_name}! Esta é uma conta verificada."
                 )
             except TelegramError as e:
                 logger.error(f"Erro ao promover verificado: {e}")
 
-def error_handler(update: Update, context: CallbackContext) -> None:
+async def error_handler(update: Update, context: CallbackContext) -> None:
     """Lida com erros."""
     logger.error(f"Update {update} caused error {context.error}")
     if update.effective_message:
-        update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
+        await update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
 
 def main() -> None:
     """Inicia o bot."""
@@ -449,33 +472,32 @@ def main() -> None:
         if conn is not None:
             conn.close()
 
-    updater = Updater(token)
-    dispatcher = updater.dispatcher
+    # Cria a aplicação
+    application = Application.builder().token(token).build()
 
     # Handlers de comandos
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("setgroupadmin", set_group_admin))
-    dispatcher.add_handler(CommandHandler("addverified", add_verified))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("setgroupadmin", set_group_admin))
+    application.add_handler(CommandHandler("addverified", add_verified))
     
     # Handlers de mensagens
-    dispatcher.add_handler(MessageHandler(
-        Filters.text & (~Filters.command), 
+    application.add_handler(MessageHandler(
+        filters.TEXT & (~filters.COMMAND), 
         handle_verification_keywords
     ))
     
     # Handler para botões
-    dispatcher.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CallbackQueryHandler(button_handler))
     
     # Handler para novos membros
-    dispatcher.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
     
     # Handler de erros
-    dispatcher.add_error_handler(error_handler)
+    application.add_error_handler(error_handler)
 
     # Inicia o bot
-    updater.start_polling()
+    application.run_polling()
     logger.info("Bot iniciado e aguardando mensagens...")
-    updater.idle()
 
 if __name__ == '__main__':
     main()
