@@ -3,13 +3,17 @@ services:
     name: telegram-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT main:app
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
-        value: postgresql://user:password@host:port/dbname
+        fromDatabase:
+          name: telegrambotdb
+          property: connectionString
       - key: BOT_TOKEN
-        value: your_bot_token
+        required: true
       - key: BOT_ADMIN_ID
-        value: your_admin_id
+        required: true 
       - key: WEBHOOK_URL
-        value: https://ksgroupbot.onrender.com
+        required: true
+      - key: PORT
+        value: 10000
