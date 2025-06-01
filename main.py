@@ -4,9 +4,9 @@ from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Configuração básica
-TOKEN = os.getenv(7589679491:AAFwPkgGzhy0XC-b1fOvFfyWQqq9K0m86vs)
-CHANNEL_ID = os.getenv(-1002501372117)  # ID do canal de origem (com @ ou numérico)
-ADMIN_ID = os.getenv(7931274695)  # Seu ID de usuário para comandos admin
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHANNEL_ID = os.getenv('SOURCE_CHANNEL_ID')  # ID do canal de origem (com @ ou numérico)
+ADMIN_ID = os.getenv('ADMIN_USER_ID')  # Seu ID de usuário para comandos admin
 
 # Configurar logging
 logging.basicConfig(
