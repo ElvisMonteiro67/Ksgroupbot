@@ -18,7 +18,6 @@ from telegram.ext import (
 from sqlalchemy import create_engine, Column, Integer, String, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from threading import Lock
-from queue import Queue
 
 # ==================================================
 # CONFIGURAÇÃO INICIAL
@@ -360,8 +359,15 @@ def main():
         logger.error(f"Falha ao inicializar banco de dados: {e}")
         return
 
-    # Cria a aplicação
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Cria a aplicação com configurações específicas para evitar conflitos
+    application = Application.builder() \
+        .token(BOT_TOKEN) \
+        .read_timeout(30) \
+        .write_timeout(30) \
+        .connect_timeout(30) \
+        .pool_timeout(30) \
+        .get_updates_read_timeout(30) \
+        .build()
 
     # Adiciona os handlers
     application.add_handler(CommandHandler("start", start))
@@ -375,22 +381,44 @@ def main():
         new_member_check
     ))
 
-    # Conversa interativa
+    # Conversa interativa com configuração para evitar warnings
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("manage", manage)],
         states={
-            CHOOSING_ACTION: [CallbackQueryHandler(action_choice)],
+            CHOOSING_ACTION: [CallbackQueryHandler(action_choice, pattern='^(add_admin|add_verified|cancel)$')],
             WAITING_FOR_USERNAME: [
                 MessageHandler(filters.TEXT | filters.FORWARDED, process_username)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_operation)],
-        allow_reentry=True
+        per_message=False
     )
     application.add_handler(conv_handler)
 
-    # Inicia o bot
-    application.run_polling()
+    # Adiciona handler de erros
+    application.add_error_handler(error_handler)
+
+    # Inicia o bot com polling configurado
+    application.run_polling(
+        poll_interval=1.0,
+        timeout=30,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Loga erros e tenta evitar conflitos"""
+    logger.error(f"Erro durante a atualização {update}: {context.error}")
+    
+    # Verifica se é um erro de conflito (outra instância rodando)
+    if "Conflict" in str(context.error):
+        logger.warning("Conflito detectado - outra instância pode estar rodando")
+        # Espera um tempo antes de tentar novamente
+        await asyncio.sleep(5)
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Falha ao iniciar o bot: {e}")
