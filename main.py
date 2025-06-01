@@ -242,43 +242,43 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         response = (
             "👑 Comandos de admin:\n"
             "/addverified @username\n"
-            "/setgroupadmin @username ID_GRUPO"
+            "/setgroupadmin @username"
         )
         await query.edit_message_text(text=response)
 
 async def set_group_admin(update: Update, context: CallbackContext) -> None:
-    """Define um admin de grupo."""
+    """Define um admin de grupo (versão simplificada sem ID_GRUPO)."""
     if not is_bot_admin(update.effective_user.id):
         await update.message.reply_text("❌ Sem permissão.")
         return
 
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Uso: /setgroupadmin @username ID_GRUPO")
+    if not context.args:
+        await update.message.reply_text("❌ Uso: /setgroupadmin @username")
         return
 
+    username = context.args[0]
+    chat_id = update.effective_chat.id  # Usa o chat atual como grupo alvo
+
     try:
-        username = context.args[0]
-        chat_id = int(context.args[1])
         user_id = await get_user_id_by_username(context.bot, username)
         if not user_id:
             await update.message.reply_text("❌ Usuário não encontrado.")
             return
         
         if add_group_admin(user_id, chat_id):
-            await update.message.reply_text(f"✅ @{username} adicionado como admin do grupo {chat_id}.")
+            await update.message.reply_text(f"✅ @{username} adicionado como admin deste grupo.")
         else:
-            await update.message.reply_text(f"ℹ️ @{username} já é admin.")
-    except ValueError:
-        await update.message.reply_text("❌ ID inválido.")
+            await update.message.reply_text(f"ℹ️ @{username} já é admin deste grupo.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro: {str(e)}")
 
-# Função corrigida para adicionar verificados (totalmente assíncrona)
 async def add_verified(update: Update, context: CallbackContext) -> None:
     """Adiciona um usuário verificado."""
     if not is_bot_admin(update.effective_user.id):
         await update.message.reply_text("❌ Sem permissão.")
         return
 
-    if len(context.args) < 1:
+    if not context.args:
         await update.message.reply_text("❌ Uso: /addverified @username")
         return
 
