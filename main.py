@@ -1,4 +1,5 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -9,7 +10,6 @@ from telegram.ext import (
     ContextTypes,
 )
 from telegram.constants import ChatType
-import asyncio
 
 # Configuração do logging
 logging.basicConfig(
@@ -81,31 +81,38 @@ class ForwardBot:
             "Use /stats para ver estatísticas de alcance."
         )
 
+    async def get_chat_info(self, chat_id, context):
+        """Obtém informações do chat de forma segura"""
+        try:
+            chat = await context.bot.get_chat(chat_id)
+            members_count = await context.bot.get_chat_members_count(chat_id)
+            return chat, members_count
+        except Exception as e:
+            logger.error(f"Erro ao obter info do chat {chat_id}: {e}")
+            return None, 0
+
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Mostra estatísticas de grupos e membros."""
         try:
+            # Verifica se há algum chat registrado
+            if not context.bot_data.get('known_chats'):
+                await update.message.reply_text("🤖 Eu ainda não estou em nenhum grupo. Adicione-me a um grupo para começar!")
+                return
+            
             total_groups = 0
             total_members = 0
             group_list = []
             
-            # Obtém todos os chats onde o bot está (usando uma abordagem alternativa)
-            updates = await context.bot.get_updates()
-            
-            for update_data in updates:
-                if hasattr(update_data, 'message') and update_data.message:
-                    chat = update_data.message.chat
-                    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                        try:
-                            members_count = await context.bot.get_chat_members_count(chat.id)
-                            total_members += members_count
-                            total_groups += 1
-                            group_list.append(f"{chat.title}: {members_count} membros")
-                        except Exception as e:
-                            logger.error(f"Erro ao obter contagem de membros para {chat.id}: {e}")
-                            continue
+            # Verifica todos os chats conhecidos
+            for chat_id in context.bot_data.get('known_chats', set()):
+                chat, members_count = await self.get_chat_info(chat_id, context)
+                if chat and chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    total_members += members_count
+                    total_groups += 1
+                    group_list.append(f"{chat.title}: {members_count} membros")
             
             if total_groups == 0:
-                await update.message.reply_text("🤖 Eu ainda não estou em nenhum grupo. Adicione-me a um grupo para começar!")
+                await update.message.reply_text("🤖 Não consegui acessar nenhum grupo no momento. Talvez eu tenha sido removido?")
             else:
                 stats_msg = (
                     f"📊 Estatísticas de Alcance:\n"
@@ -124,18 +131,14 @@ class ForwardBot:
         await query.answer()
         await query.edit_message_text(text=f"Ótimo! Agora você pode me adicionar ao grupo.")
 
-    async def get_all_groups(self, context: ContextTypes.DEFAULT_TYPE):
-        """Obtém todos os grupos onde o bot está adicionado."""
-        groups = []
-        updates = await context.bot.get_updates()
+    async def track_new_chat(self, chat_id, context):
+        """Registra um novo chat na lista de chats conhecidos"""
+        if 'known_chats' not in context.bot_data:
+            context.bot_data['known_chats'] = set()
         
-        for update_data in updates:
-            if hasattr(update_data, 'message') and update_data.message:
-                chat = update_data.message.chat
-                if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                    groups.append(chat)
-        
-        return groups
+        if chat_id not in context.bot_data['known_chats']:
+            context.bot_data['known_chats'].add(chat_id)
+            logger.info(f"Novo chat registrado: {chat_id}")
 
     async def handle_private_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Processa mensagens recebidas no privado e encaminha para os grupos."""
@@ -148,55 +151,88 @@ class ForwardBot:
                 await update.message.reply_text("⚠️ Por favor, envie mensagens diretamente, não como resposta.")
                 return
             
-            total_groups = 0
-            total_members = 0
-            forwarded_to = []
-            
-            # Obtém todos os grupos onde o bot está
-            groups = await self.get_all_groups(context)
-            
-            if not groups:
+            # Verifica se há chats registrados
+            if not context.bot_data.get('known_chats'):
                 await update.message.reply_text(
-                    "⚠️ Eu não estou em nenhum grupo ainda. Por favor, adicione-me a um grupo primeiro.\n\n"
-                    "Use /start para ver como me adicionar ao seu grupo."
+                    "⚠️ Eu não estou registrado em nenhum grupo ainda. Adicione-me a um grupo e envie uma mensagem qualquer nele para eu me registrar."
                 )
                 return
             
-            # Encaminha a mensagem para cada grupo
-            for group in groups:
+            total_groups = 0
+            total_members = 0
+            forwarded_to = []
+            failed_chats = []
+            
+            # Processa todos os chats conhecidos
+            for chat_id in context.bot_data['known_chats']:
                 try:
+                    chat = await context.bot.get_chat(chat_id)
+                    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                        continue
+                    
                     # Encaminha a mensagem para o grupo
-                    await message.forward(group.id)
+                    await message.forward(chat_id)
                     
                     # Obtém estatísticas do grupo
-                    members_count = await context.bot.get_chat_members_count(group.id)
+                    members_count = await context.bot.get_chat_members_count(chat_id)
                     total_members += members_count
                     total_groups += 1
-                    forwarded_to.append(group.title)
+                    forwarded_to.append(chat.title)
                 except Exception as e:
-                    logger.error(f"Erro ao encaminhar mensagem para {group.id}: {e}")
+                    logger.error(f"Erro ao processar chat {chat_id}: {e}")
+                    failed_chats.append(chat_id)
                     continue
             
-            # Cria mensagem de confirmação
-            confirmation_msg = (
-                f"✅ Mensagem encaminhada com sucesso para {total_groups} grupos, "
-                f"alcançando um total de {total_membros} pessoas.\n\n"
-                f"📋 Grupos:\n• " + "\n• ".join(forwarded_to)
-            )
+            # Remove chats que falharam
+            if failed_chats:
+                for chat_id in failed_chats:
+                    context.bot_data['known_chats'].discard(chat_id)
+                logger.info(f"Chats removidos por falha: {failed_chats}")
             
-            # Envia confirmação para o usuário
-            await update.message.reply_text(confirmation_msg)
+            if total_groups == 0:
+                await update.message.reply_text(
+                    "⚠️ Não consegui encaminhar para nenhum grupo. Verifique se ainda estou adicionado nos grupos."
+                )
+            else:
+                # Cria mensagem de confirmação
+                confirmation_msg = (
+                    f"✅ Mensagem encaminhada com sucesso para {total_groups} grupos, "
+                    f"alcançando um total de {total_members} pessoas.\n\n"
+                    f"📋 Grupos:\n• " + "\n• ".join(forwarded_to)
+                )
+                
+                # Envia confirmação para o usuário
+                await update.message.reply_text(confirmation_msg)
         except Exception as e:
             logger.error(f"Erro ao processar mensagem privada: {e}")
             await update.message.reply_text("⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente mais tarde.")
+
+    async def track_chats(self, context: ContextTypes.DEFAULT_TYPE):
+        """Rastreia todos os chats onde o bot está presente"""
+        try:
+            updates = await context.bot.get_updates()
+            for update in updates:
+                if update.my_chat_member:
+                    chat = update.my_chat_member.chat
+                    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                        await self.track_new_chat(chat.id, context)
+                elif update.message:
+                    chat = update.message.chat
+                    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                        await self.track_new_chat(chat.id, context)
+        except Exception as e:
+            logger.error(f"Erro ao rastrear chats: {e}")
 
     def run(self):
         """Inicia o bot."""
         self.application.run_polling()
 
 if __name__ == "__main__":
-    # Substitua pelo token do seu bot
-    TOKEN = "7589679491:AAFwPkgGzhy0XC-b1fOvFfyWQqq9K0m86vs"
+    # Obtém o token da variável de ambiente
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    if not TOKEN:
+        raise ValueError("Por favor, defina a variável de ambiente TELEGRAM_BOT_TOKEN")
     
     bot = ForwardBot(TOKEN)
     bot.run()
