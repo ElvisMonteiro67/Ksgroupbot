@@ -1,2 +1,6 @@
 python-telegram-bot==20.3
+fastapi==0.95.2
+uvicorn==0.22.0
+gunicorn==20.1.0
 python-dotenv==1.0.0
+httpx==0.24.1

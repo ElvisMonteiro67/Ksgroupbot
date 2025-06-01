@@ -1,5 +1,7 @@
-import logging
 import os
+import logging
+import asyncio
+import signal
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -10,31 +12,98 @@ from telegram.ext import (
     ContextTypes,
 )
 from telegram.constants import ChatType
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 # Configuração do logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Cria aplicação FastAPI para health checks
+app = FastAPI()
 
 class ForwardBot:
     def __init__(self, token):
         self.token = token
         self.application = Application.builder().token(token).build()
+        self.stop_event = asyncio.Event()
+        
+        # Inicializa dados persistentes do bot
+        self.application.bot_data.setdefault('known_chats', set())
         
         # Handlers
-        self.application.add_handler(CommandHandler("start", self.start))
-        self.application.add_handler(CommandHandler("help", self.help))
-        self.application.add_handler(CommandHandler("stats", self.stats))
-        self.application.add_handler(CallbackQueryHandler(self.button))
-        self.application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self.handle_private_message))
-        
-        # Adiciona handler de erros
+        self.setup_handlers()
         self.application.add_error_handler(self.error_handler)
+    
+    def setup_handlers(self):
+        """Configura todos os handlers do bot"""
+        handlers = [
+            CommandHandler("start", self.start),
+            CommandHandler("help", self.help),
+            CommandHandler("stats", self.stats),
+            CallbackQueryHandler(self.button),
+            MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self.handle_private_message)
+        ]
+        for handler in handlers:
+            self.application.add_handler(handler)
+    
+    async def shutdown(self, signum=None, frame=None):
+        """Manipulador de shutdown"""
+        logger.info("Recebido sinal de desligamento, encerrando...")
+        await self.application.stop()
+        self.stop_event.set()
+        logger.info("Bot desligado corretamente")
+    
+    def run_polling(self):
+        """Inicia o bot em modo polling com tratamento de sinais"""
+        loop = asyncio.get_event_loop()
+        
+        # Configura handlers de sinal
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(
+                    sig, 
+                    lambda s=sig: asyncio.create_task(self.shutdown(s, None))
+                )
+            except NotImplementedError:
+                logger.warning(f"Handlers de sinal não suportados nesta plataforma")
+            
+        try:
+            logger.info("Iniciando bot em modo polling...")
+            self.application.run_polling()
+            loop.run_until_complete(self.stop_event.wait())
+        except Exception as e:
+            logger.error(f"Erro ao iniciar bot: {e}")
+        finally:
+            if not loop.is_closed():
+                loop.close()
+    
+    def run_webhook(self):
+        """Inicia o bot em modo webhook"""
+        webhook_url = os.getenv("WEBHOOK_URL")
+        port = int(os.getenv("PORT", 10000))
+        secret_token = os.getenv("WEBHOOK_SECRET", "SECRET_TOKEN")
+        
+        logger.info(f"Iniciando bot em modo webhook na porta {port}...")
+        self.application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=webhook_url,
+            secret_token=secret_token
+        )
     
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a message if possible."""
         logger.error("Exception while handling an update:", exc_info=context.error)
+        
+        if isinstance(context.error, telegram.error.Conflict):
+            logger.error("Conflito detectado - outra instância pode estar rodando")
+            await asyncio.sleep(10)
+            await self.shutdown()
+            return
         
         if update and isinstance(update, Update):
             try:
@@ -223,16 +292,41 @@ class ForwardBot:
         except Exception as e:
             logger.error(f"Erro ao rastrear chats: {e}")
 
-    def run(self):
-        """Inicia o bot."""
-        self.application.run_polling()
+@app.get("/health")
+async def health_check():
+    """Endpoint para health checks do Render"""
+    return JSONResponse(
+        content={"status": "ok", "message": "Bot está funcionando"},
+        status_code=200
+    )
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicia o bot quando a aplicação FastAPI inicia"""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("Por favor, defina a variável de ambiente TELEGRAM_BOT_TOKEN")
+    
+    global bot
+    bot = ForwardBot(token)
+    
+    # Decide o modo de operação baseado nas variáveis de ambiente
+    if os.getenv("WEBHOOK_URL"):
+        # Inicia o bot em modo webhook em uma task separada
+        asyncio.create_task(bot.run_webhook())
+    else:
+        # Inicia o bot em modo polling em uma task separada
+        asyncio.create_task(bot.run_polling())
 
 if __name__ == "__main__":
-    # Obtém o token da variável de ambiente
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    
     if not TOKEN:
         raise ValueError("Por favor, defina a variável de ambiente TELEGRAM_BOT_TOKEN")
     
     bot = ForwardBot(TOKEN)
-    bot.run()
+    
+    # Use webhook se configurado, caso contrário polling
+    if os.getenv("WEBHOOK_URL"):
+        bot.run_webhook()
+    else:
+        bot.run_polling()
