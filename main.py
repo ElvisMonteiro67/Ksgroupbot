@@ -38,7 +38,7 @@ RETRY_DELAY = 10
 WEBHOOK_MODE = os.getenv('WEBHOOK_MODE', 'false').lower() == 'true'
 
 # ==============================================
-# FUNÇÕES DE BANCO DE DADOS (CORRIGIDAS)
+# FUNÇÕES DE BANCO DE DADOS
 # ==============================================
 
 @contextmanager
@@ -162,7 +162,7 @@ def setup_admin_users():
         logger.error(f"Erro ao configurar admins do bot: {e}")
 
 # ==============================================
-# FUNÇÕES PRINCIPAIS DO BOT (MANTIDAS)
+# FUNÇÕES PRINCIPAIS DO BOT
 # ==============================================
 
 def is_bot_admin(user_id: int) -> bool:
@@ -317,7 +317,7 @@ def error_handler(update: Update, context: CallbackContext) -> None:
         logger.error(f'Erro no manipulador de erros: {e}')
 
 # ==============================================
-# SOLUÇÕES PARA O RENDER
+# SOLUÇÕES PARA O RENDER (CORRIGIDAS)
 # ==============================================
 
 def ensure_single_instance(bot_token: str) -> bool:
@@ -352,8 +352,7 @@ def start_webhook(updater: Updater):
             port=PORT,
             url_path=os.getenv('TELEGRAM_TOKEN'),
             webhook_url=WEBHOOK_URL,
-            clean=True,
-            drop_pending_updates=True
+            drop_pending_updates=True  # Removido o parâmetro 'clean' que causava conflito
         )
         logger.info(f"Webhook ativo na porta {PORT}")
     except Exception as e:
@@ -375,8 +374,7 @@ def start_polling_safely(updater: Updater):
                 drop_pending_updates=True,
                 timeout=30,
                 allowed_updates=['message', 'callback_query', 'chat_member'],
-                bootstrap_retries=-1,
-                clean=True
+                bootstrap_retries=-1
             )
             logger.info("Bot iniciado via polling")
             return
