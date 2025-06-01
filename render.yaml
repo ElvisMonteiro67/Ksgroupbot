@@ -11,6 +11,8 @@ services:
         value: seu_token_aqui
       - key: WEBHOOK_URL
         value: https://seubot.onrender.com
+      - key: WEBHOOK_MODE
+        value: "true"
       - key: PORT
         value: 10000
       - key: WEBHOOK_SECRET
