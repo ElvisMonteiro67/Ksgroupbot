@@ -83,7 +83,7 @@ async def show_admin_panel(query):
 async def manage_users(query, context):
     """Mostra interface para gerenciar usuários verificados"""
     users = get_verified_users()
-    users_text = "\n".join([f"🔹 @{user}" for user in users]) if users else "Nenhum usuário verificado."
+    users_text = "\n".join([f"🔹 {user}" for user in users]) if users else "Nenhum usuário verificado."
     
     keyboard = [
         [InlineKeyboardButton("Adicionar Usuário", callback_data="admin_add_user")],
@@ -102,7 +102,8 @@ async def manage_groups(query):
     groups_text = "\n".join([f"🔹 {group}" for group in groups]) if groups else "Nenhum grupo cadastrado."
     
     keyboard = [
-        [InlineKeyboardButton("Adicionar Grupo", callback_data="admin_add_group")],
+        [InlineKeyboardButton("Adicionar Grupo Manualmente", callback_data="admin_add_group")],
+        [InlineKeyboardButton("Listar e Adicionar Todos os Grupos", callback_data="admin_list_groups")],
         [InlineKeyboardButton("Remover Grupo", callback_data="admin_remove_group")],
         [InlineKeyboardButton("Voltar", callback_data="admin")]
     ]
@@ -116,7 +117,7 @@ async def handle_admin_add_user(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "Digite o @username do usuário que deseja adicionar como verificado (sem o @):",
+        "Digite o @username do usuário que deseja adicionar como verificado (com ou sem o @):",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Cancelar", callback_data="admin_manage_users")]
         ])
@@ -126,13 +127,47 @@ async def handle_admin_add_user(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_admin_remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    users = get_verified_users()
+    
+    if not users:
+        await query.edit_message_text(
+            "Não há usuários verificados para remover.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Voltar", callback_data="admin_manage_users")]
+            ])
+        )
+        return
+    
+    keyboard = []
+    for user in users:
+        keyboard.append([InlineKeyboardButton(f"Remover: {user}", callback_data=f"admin_remove_user_{user}")])
+    
+    keyboard.append([InlineKeyboardButton("Cancelar", callback_data="admin_manage_users")])
+    
     await query.edit_message_text(
-        "Digite o @username do usuário que deseja remover da lista de verificados (sem o @):",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Cancelar", callback_data="admin_manage_users")]
-        ])
+        "Selecione o usuário que deseja remover:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    context.user_data["admin_action"] = "remove_user"
+
+async def handle_admin_remove_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = query.data.split("_")[-1]
+    
+    if remove_verified_user(username):
+        await query.edit_message_text(
+            f"✅ Usuário {username} removido com sucesso!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Voltar ao Painel", callback_data="admin")]
+            ])
+        )
+    else:
+        await query.edit_message_text(
+            f"❌ Erro ao remover usuário {username}.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Tentar Novamente", callback_data="admin_remove_user")]
+            ])
+        )
 
 async def handle_admin_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -145,6 +180,52 @@ async def handle_admin_add_group(update: Update, context: ContextTypes.DEFAULT_T
     )
     context.user_data["admin_action"] = "add_group"
 
+async def handle_admin_list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Obter todos os chats onde o bot está presente
+        groups = []
+        async for chat in context.bot.get_chat_member_chats():
+            if chat.type in ['group', 'supergroup']:
+                chat_id = str(chat.id)
+                chat_title = chat.title or chat_id
+                if not is_group_registered(chat_id):
+                    groups.append((chat_id, chat_title))
+        
+        if not groups:
+            await query.edit_message_text(
+                "Não foram encontrados novos grupos para adicionar.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
+                ])
+            )
+            return
+        
+        # Adicionar todos os grupos encontrados
+        added_count = 0
+        for group_id, group_title in groups:
+            if add_group(group_id, query.from_user.id):
+                added_count += 1
+        
+        await query.edit_message_text(
+            f"✅ Foram adicionados {added_count} novos grupos automaticamente!\n\n"
+            f"Grupos adicionados:\n" + "\n".join([f"🔹 {title} (ID: {id})" for id, title in groups]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
+            ])
+        )
+    
+    except Exception as e:
+        logger.error(f"Erro ao listar grupos: {e}")
+        await query.edit_message_text(
+            "❌ Ocorreu um erro ao listar os grupos. Certifique-se de que o bot é administrador nos grupos.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
+            ])
+        )
+
 async def handle_admin_remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -152,7 +233,7 @@ async def handle_admin_remove_group(update: Update, context: ContextTypes.DEFAUL
     
     if not groups:
         await query.edit_message_text(
-            "Não há grupos cadastrados.",
+            "Não há grupos cadastrados para remover.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
             ])
@@ -195,11 +276,9 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
     text = update.message.text.strip()
     
     if user_data.get("admin_action") == "add_user":
-        if not text.startswith("@"):
-            text = f"@{text}"
         if add_verified_user(text, update.effective_user.id):
             await update.message.reply_text(
-                f"✅ Usuário {text} adicionado como verificado com sucesso!",
+                f"✅ Usuário @{text.lstrip('@')} adicionado como verificado com sucesso!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Voltar ao Painel", callback_data="admin")]
                 ])
@@ -209,24 +288,6 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
                 "❌ Erro ao adicionar usuário. Verifique se o username está correto.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Tentar Novamente", callback_data="admin_add_user")]
-                ])
-            )
-    
-    elif user_data.get("admin_action") == "remove_user":
-        if not text.startswith("@"):
-            text = f"@{text}"
-        if remove_verified_user(text):
-            await update.message.reply_text(
-                f"✅ Usuário {text} removido da lista de verificados com sucesso!",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Voltar ao Painel", callback_data="admin")]
-                ])
-            )
-        else:
-            await update.message.reply_text(
-                f"❌ Usuário {text} não encontrado na lista de verificados.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Tentar Novamente", callback_data="admin_remove_user")]
                 ])
             )
     
@@ -317,14 +378,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "admin_remove_user":
         await handle_admin_remove_user(update, context)
     
+    elif query.data.startswith("admin_remove_user_"):
+        await handle_admin_remove_user_callback(update, context)
+    
     elif query.data == "admin_manage_groups":
         await manage_groups(query)
     
     elif query.data == "admin_add_group":
         await handle_admin_add_group(update, context)
     
+    elif query.data == "admin_list_groups":
+        await handle_admin_list_groups(update, context)
+    
     elif query.data == "admin_remove_group":
         await handle_admin_remove_group(update, context)
+    
+    elif query.data.startswith("admin_remove_group_"):
+        await handle_admin_remove_group_callback(update, context)
     
     elif query.data == "admin_set_channel":
         await query.edit_message_text(
@@ -334,9 +404,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         context.user_data["awaiting_channel"] = True
-    
-    elif query.data.startswith("admin_remove_group_"):
-        await handle_admin_remove_group_callback(update, context)
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manipula mensagens recebidas"""
