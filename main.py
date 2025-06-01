@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 from telegram import (
     Update, 
     InlineKeyboardButton, 
@@ -37,6 +36,8 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_ADMIN_ID = int(os.getenv("BOT_ADMIN_ID", "0"))
+PORT = int(os.getenv("PORT", "8443"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") + "/" + BOT_TOKEN
 
 # Configuração do SQLAlchemy
 engine = create_engine(
@@ -347,19 +348,11 @@ async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ConversationHandler.END
 
 # ==================================================
-# CONFIGURAÇÃO PRINCIPAL
+# CONFIGURAÇÃO PRINCIPAL (WEBHOOK)
 # ==================================================
 
-async def post_init(application: Application) -> None:
-    """Executa após a inicialização"""
-    logger.info("Bot iniciado com sucesso!")
-
-async def post_stop(application: Application) -> None:
-    """Executa ao parar o bot"""
-    logger.info("Bot encerrado")
-
-async def main():
-    """Função principal"""
+def main():
+    """Função principal com configuração de webhook"""
     try:
         init_db()
         logger.info("Banco de dados inicializado.")
@@ -367,16 +360,12 @@ async def main():
         logger.error(f"Falha ao inicializar banco de dados: {e}")
         return
 
-    # Cria a aplicação com configurações para evitar conflitos
+    # Cria a aplicação
     application = Application.builder() \
         .token(BOT_TOKEN) \
-        .post_init(post_init) \
-        .post_stop(post_stop) \
         .read_timeout(30) \
         .write_timeout(30) \
         .connect_timeout(30) \
-        .pool_timeout(30) \
-        .get_updates_read_timeout(30) \
         .build()
 
     # Adiciona os handlers
@@ -395,48 +384,28 @@ async def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("manage", manage)],
         states={
-            CHOOSING_ACTION: [CallbackQueryHandler(action_choice, pattern='^(add_admin|add_verified|cancel)$')],
+            CHOOSING_ACTION: [CallbackQueryHandler(action_choice)],
             WAITING_FOR_USERNAME: [
                 MessageHandler(filters.TEXT | filters.FORWARDED, process_username)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_operation)],
-        per_message=True  # Alterado para True para evitar o warning
+        per_message=False
     )
     application.add_handler(conv_handler)
 
-    # Adiciona handler de erros
-    application.add_error_handler(error_handler)
-
-    # Executa o bot com polling configurado
-    await application.run_polling(
-        poll_interval=1.0,
-        timeout=30,
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-        close_loop=False
-    )
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Loga erros e tenta evitar conflitos"""
-    logger.error(f"Erro durante a atualização {update}: {context.error}")
-    
-    # Verifica se é um erro de conflito (outra instância rodando)
-    if "Conflict" in str(context.error):
-        logger.warning("Conflito detectado - aguardando 10 segundos antes de tentar novamente")
-        await asyncio.sleep(10)
-        # Reinicia o polling
-        if context.application.running:
-            await context.application.stop()
-            await asyncio.sleep(1)
-            await context.application.initialize()
-            await context.application.start()
-            await context.application.updater.start_polling()
+    # Configura o webhook no Render
+    if 'RENDER' in os.environ:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=BOT_TOKEN,
+            webhook_url=WEBHOOK_URL,
+            drop_pending_updates=True
+        )
+    else:
+        # Modo local para desenvolvimento
+        application.run_polling()
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot encerrado pelo usuário")
-    except Exception as e:
-        logger.error(f"Falha ao iniciar o bot: {e}")
+    main()
