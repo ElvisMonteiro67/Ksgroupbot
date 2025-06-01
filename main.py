@@ -1,294 +1,138 @@
 import os
 import logging
-import asyncio
-import signal
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
-)
-from telegram.constants import ChatType
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse, PlainTextResponse
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# Configuração do logging
+# Configuração básica
+TOKEN = os.getenv(7589679491:AAFwPkgGzhy0XC-b1fOvFfyWQqq9K0m86vs)
+CHANNEL_ID = os.getenv(-1002501372117)  # ID do canal de origem (com @ ou numérico)
+ADMIN_ID = os.getenv(7931274695)  # Seu ID de usuário para comandos admin
+
+# Configurar logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Cria aplicação FastAPI
-app = FastAPI()
-bot_application = None
+# Dicionário para armazenar temporariamente os grupos (simulando DB)
+groups_cache = {
+    'group_ids': set(),
+    'last_update': 0
+}
 
-class ForwardBot:
-    def __init__(self, token):
-        self.token = token
-        self.application = Application.builder().token(token).build()
-        self.stop_event = asyncio.Event()
-        
-        # Inicializa dados persistentes
-        self.application.bot_data.setdefault('known_chats', set())
-        
-        # Configura handlers
-        self.setup_handlers()
-        self.application.add_error_handler(self.error_handler)
-    
-    def setup_handlers(self):
-        """Configura todos os handlers do bot"""
-        handlers = [
-            CommandHandler("start", self.start),
-            CommandHandler("help", self.help),
-            CommandHandler("stats", self.stats),
-            CallbackQueryHandler(self.button),
-            MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, self.handle_private_message)
-        ]
-        for handler in handlers:
-            self.application.add_handler(handler)
-    
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handler do comando /start"""
-        user = update.effective_user
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "➕ Adicionar ao Grupo",
-                    url=f"https://t.me/{context.bot.username}?startgroup=true&admin=post_messages+delete_messages+invite_users+restrict_members",
-                )
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_html(
-            rf"""
-            Olá {user.mention_html()}! Eu sou um bot de encaminhamento de mensagens.
+def start(update: Update, context: CallbackContext) -> None:
+    """Envia mensagem de boas-vindas quando o comando /start é recebido."""
+    update.message.reply_text('🤖 Bot de encaminhamento ativo! Adicione-me a grupos como admin para funcionar.')
 
-            ✨ <b>Como funciona:</b>
-            1. Adicione-me a um ou mais grupos (botão abaixo)
-            2. Envie a mensagem que deseja encaminhar para mim no privado
-            3. Eu encaminho para todos os grupos onde estou adicionado
-            
-            📊 Após o encaminhamento, mostro quantas pessoas foram alcançadas (soma de todos os membros dos grupos).
-            
-            Clique no botão abaixo para me adicionar ao seu grupo com todas as permissões necessárias:
-            """,
-            reply_markup=reply_markup,
-        )
-
-    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handler do comando /help"""
-        await update.message.reply_text(
-            "📝 Envie qualquer mensagem (texto, foto, vídeo, etc.) para mim no privado "
-            "e eu a encaminharei para todos os grupos onde estou adicionado.\n\n"
-            "Use /stats para ver estatísticas de alcance."
-        )
-
-    async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handler do comando /stats"""
-        try:
-            if not context.bot_data.get('known_chats'):
-                await update.message.reply_text("🤖 Eu ainda não estou em nenhum grupo. Adicione-me a um grupo para começar!")
-                return
-            
-            total_groups = 0
-            total_members = 0
-            group_list = []
-            
-            for chat_id in context.bot_data.get('known_chats', set()):
-                try:
-                    chat = await context.bot.get_chat(chat_id)
-                    if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                        members_count = await context.bot.get_chat_members_count(chat_id)
-                        total_members += members_count
-                        total_groups += 1
-                        group_list.append(f"{chat.title}: {members_count} membros")
-                except Exception as e:
-                    logger.error(f"Erro ao obter info do chat {chat_id}: {e}")
-                    continue
-            
-            if total_groups == 0:
-                await update.message.reply_text("🤖 Não consegui acessar nenhum grupo no momento. Talvez eu tenha sido removido?")
-            else:
-                stats_msg = (
-                    f"📊 Estatísticas de Alcance:\n"
-                    f"• Grupos: {total_groups}\n"
-                    f"• Total de membros: {total_members}\n\n"
-                    f"📋 Lista de Grupos:\n" + "\n".join(group_list)
-                )
-                await update.message.reply_text(stats_msg)
-        except Exception as e:
-            logger.error(f"Erro no comando /stats: {e}")
-            await update.message.reply_text("⚠️ Ocorreu um erro ao obter estatísticas. Tente novamente mais tarde.")
-
-    async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handler de callbacks de botões"""
-        query = update.callback_query
-        await query.answer()
-        await query.edit_message_text(text="Ótimo! Agora você pode me adicionar ao grupo.")
-
-    async def handle_private_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Processa mensagens privadas para encaminhar aos grupos"""
-        try:
-            message = update.effective_message
-            
-            if message.reply_to_message:
-                await update.message.reply_text("⚠️ Por favor, envie mensagens diretamente, não como resposta.")
-                return
-            
-            if not context.bot_data.get('known_chats'):
-                await update.message.reply_text(
-                    "⚠️ Eu não estou registrado em nenhum grupo ainda. Adicione-me a um grupo e envie uma mensagem qualquer nele para eu me registrar."
-                )
-                return
-            
-            total_groups = 0
-            total_members = 0
-            forwarded_to = []
-            failed_chats = []
-            
-            for chat_id in context.bot_data['known_chats']:
-                try:
-                    chat = await context.bot.get_chat(chat_id)
-                    if chat.type not in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                        continue
-                    
-                    await message.forward(chat_id)
-                    members_count = await context.bot.get_chat_members_count(chat_id)
-                    total_members += members_count
-                    total_groups += 1
-                    forwarded_to.append(chat.title)
-                except Exception as e:
-                    logger.error(f"Erro ao processar chat {chat_id}: {e}")
-                    failed_chats.append(chat_id)
-                    continue
-            
-            if failed_chats:
-                for chat_id in failed_chats:
-                    context.bot_data['known_chats'].discard(chat_id)
-                logger.info(f"Chats removidos por falha: {failed_chats}")
-            
-            if total_groups == 0:
-                await update.message.reply_text(
-                    "⚠️ Não consegui encaminhar para nenhum grupo. Verifique se ainda estou adicionado nos grupos."
-                )
-            else:
-                confirmation_msg = (
-                    f"✅ Mensagem encaminhada com sucesso para {total_groups} grupos, "
-                    f"alcançando um total de {total_members} pessoas.\n\n"
-                    f"📋 Grupos:\n• " + "\n• ".join(forwarded_to)
-                )
-                await update.message.reply_text(confirmation_msg)
-        except Exception as e:
-            logger.error(f"Erro ao processar mensagem privada: {e}")
-            await update.message.reply_text("⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente mais tarde.")
-
-    async def track_new_chat(self, chat_id, context):
-        """Registra um novo chat na lista de chats conhecidos"""
-        if 'known_chats' not in context.bot_data:
-            context.bot_data['known_chats'] = set()
-        if chat_id not in context.bot_data['known_chats']:
-            context.bot_data['known_chats'].add(chat_id)
-            logger.info(f"Novo chat registrado: {chat_id}")
-
-    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handler global de erros"""
-        logger.error("Exception while handling an update:", exc_info=context.error)
-        
-        if update and isinstance(update, Update):
-            try:
-                await update.effective_message.reply_text(
-                    "⚠️ Ocorreu um erro inesperado. Por favor, tente novamente mais tarde."
-                )
-            except Exception:
-                pass
-
-async def initialize_bot():
-    """Inicializa a aplicação do bot"""
-    global bot_application
-    
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN não configurado")
-    
-    bot = ForwardBot(token)
-    
-    # Configura webhook se necessário
-    if os.getenv("WEBHOOK_MODE", "false").lower() == "true":
-        webhook_url = os.getenv("WEBHOOK_URL")
-        secret_token = os.getenv("WEBHOOK_SECRET", "DEFAULT_SECRET")
-        
-        if not webhook_url:
-            raise ValueError("WEBHOOK_URL não configurado")
-        
-        await bot.application.bot.set_webhook(
-            url=webhook_url,
-            secret_token=secret_token,
-            drop_pending_updates=True
-        )
-        logger.info(f"Webhook configurado para {webhook_url}")
-    
-    return bot
-
-@app.on_event("startup")
-async def startup_event():
-    """Evento de inicialização da aplicação FastAPI"""
-    global bot_application
+def update_groups_list(context: CallbackContext) -> None:
+    """Atualiza a lista de grupos onde o bot está presente."""
+    bot = context.bot
     try:
-        bot_application = await initialize_bot()
-        await bot_application.application.initialize()
-        await bot_application.application.start()
-        logger.info("Bot inicializado com sucesso")
+        # Obtém todas as conversas onde o bot está presente
+        updates = bot.get_updates()
+        
+        group_ids = set()
+        for update in updates:
+            if update.message and update.message.chat.type in ['group', 'supergroup']:
+                group_ids.add(update.message.chat.id)
+            elif update.channel_post and update.channel_post.chat.type == 'channel':
+                # Para canais, verificar se o bot é admin
+                chat_member = bot.get_chat_member(update.channel_post.chat.id, bot.id)
+                if chat_member.status in ['administrator', 'creator']:
+                    group_ids.add(update.channel_post.chat.id)
+        
+        # Adiciona também os grupos obtidos via getUpdates
+        for chat in bot.get_updates(limit=100):
+            if chat.message and chat.message.chat.type in ['group', 'supergroup']:
+                group_ids.add(chat.message.chat.id)
+        
+        groups_cache['group_ids'] = group_ids
+        groups_cache['last_update'] = time.time()
+        logger.info(f"Lista de grupos atualizada. Total: {len(group_ids)}")
     except Exception as e:
-        logger.error(f"Falha ao inicializar bot: {e}")
-        raise
+        logger.error(f"Erro ao atualizar lista de grupos: {e}")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Evento de desligamento da aplicação FastAPI"""
-    if bot_application:
-        await bot_application.application.stop()
-        await bot_application.application.shutdown()
-        logger.info("Bot desligado corretamente")
-
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    """Endpoint para receber atualizações do Telegram"""
-    if not bot_application:
-        return PlainTextResponse(
-            "Bot não inicializado",
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE
-        )
+def forward_from_channel(context: CallbackContext) -> None:
+    """Verifica mensagens do canal e encaminha para os grupos."""
+    bot = context.bot
     
     try:
-        data = await request.json()
-        update = Update.de_json(data, bot_application.application.bot)
-        await bot_application.application.update_queue.put(update)
-        return PlainTextResponse("OK")
+        # Atualiza a lista de grupos periodicamente
+        if time.time() - groups_cache['last_update'] > 3600:  # 1 hora
+            update_groups_list(context)
+        
+        # Obtém as últimas mensagens do canal
+        messages = bot.get_chat_history(CHANNEL_ID, limit=1)
+        
+        for message in messages:
+            # Verifica se a mensagem já foi processada (simples mecanismo de cache)
+            if hasattr(message, 'message_id') and not getattr(message, 'is_forwarded', False):
+                # Cria botão com o nome do canal
+                channel = bot.get_chat(CHANNEL_ID)
+                keyboard = [[InlineKeyboardButton(f"📢 {channel.title}", url=f"https://t.me/{channel.username}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # Encaminha para todos os grupos
+                for group_id in groups_cache['group_ids']:
+                    try:
+                        if message.text:
+                            bot.send_message(
+                                chat_id=group_id,
+                                text=message.text,
+                                reply_markup=reply_markup
+                            )
+                        elif message.photo:
+                            bot.send_photo(
+                                chat_id=group_id,
+                                photo=message.photo[-1].file_id,
+                                caption=message.caption,
+                                reply_markup=reply_markup
+                            )
+                        elif message.video:
+                            bot.send_video(
+                                chat_id=group_id,
+                                video=message.video.file_id,
+                                caption=message.caption,
+                                reply_markup=reply_markup
+                            )
+                        elif message.document:
+                            bot.send_document(
+                                chat_id=group_id,
+                                document=message.document.file_id,
+                                caption=message.caption,
+                                reply_markup=reply_markup
+                            )
+                        # Marca como encaminhada
+                        message.is_forwarded = True
+                        logger.info(f"Mensagem {message.message_id} encaminhada para o grupo {group_id}")
+                    except Exception as e:
+                        logger.error(f"Erro ao encaminhar para grupo {group_id}: {e}")
+                        # Remove grupo da lista se houver erro (pode ter sido removido)
+                        groups_cache['group_ids'].discard(group_id)
     except Exception as e:
-        logger.error(f"Erro no webhook: {e}")
-        return PlainTextResponse(
-            f"Erro: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        logger.error(f"Erro no forward_from_channel: {e}")
 
-@app.get("/health")
-async def health_check():
-    """Endpoint para health checks"""
-    return JSONResponse(
-        {"status": "ok", "bot_initialized": bot_application is not None},
-        status_code=status.HTTP_200_OK
-    )
+def main() -> None:
+    """Inicia o bot."""
+    # Cria o Updater e passa o token do bot
+    updater = Updater(TOKEN)
 
-if __name__ == "__main__":
-    # Modo de desenvolvimento (polling)
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("Defina TELEGRAM_BOT_TOKEN")
-    
-    bot = ForwardBot(token)
-    bot.application.run_polling()
+    # Obtém o dispatcher para registrar handlers
+    dispatcher = updater.dispatcher
+
+    # Comandos
+    dispatcher.add_handler(CommandHandler("start", start))
+
+    # Inicia o job para encaminhar mensagens periodicamente
+    job_queue = updater.job_queue
+    job_queue.run_repeating(forward_from_channel, interval=300.0, first=10.0)  # Verifica a cada 5 minutos
+
+    # Inicia o Bot
+    updater.start_polling()
+
+    # Roda o bot até que Ctrl-C seja pressionado
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
