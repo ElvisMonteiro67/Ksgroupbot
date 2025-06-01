@@ -80,7 +80,6 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username VARCHAR(255),
             full_name VARCHAR(255)
-        )
         """,
         """
         CREATE TABLE IF NOT EXISTS group_admins (
@@ -88,16 +87,14 @@ def init_db():
             chat_id BIGINT,
             username VARCHAR(255),
             full_name VARCHAR(255),
-            PRIMARY KEY (user_id, chat_id)
-        )
+            PRIMARY KEY (user_id, chat_id))
         """,
         """
         CREATE TABLE IF NOT EXISTS verified_users (
             user_id BIGINT PRIMARY KEY,
             username VARCHAR(255),
             full_name VARCHAR(255),
-            status VARCHAR(50) DEFAULT 'pending'
-        )
+            status VARCHAR(50) DEFAULT 'pending')
         """,
         """
         CREATE TABLE IF NOT EXISTS verification_requests (
@@ -107,8 +104,7 @@ def init_db():
             request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status VARCHAR(50) DEFAULT 'pending',
             reviewed_by BIGINT,
-            review_date TIMESTAMP
-        )
+            review_date TIMESTAMP)
         """
     )
     
@@ -160,6 +156,17 @@ def setup_admin_users():
     except Exception as e:
         logger.error(f"Erro ao configurar admins do bot: {e}")
 
+def is_bot_admin(user_id: int) -> bool:
+    """Verifica se o usuário é administrador do bot."""
+    try:
+        with db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM bot_admins WHERE user_id = %s", (user_id,))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logger.error(f"Erro ao verificar admin do bot: {e}")
+        return False
+
 # ==============================================
 # FUNÇÕES PRINCIPAIS DO BOT
 # ==============================================
@@ -188,11 +195,147 @@ def start(update: Update, context: CallbackContext) -> None:
     else:
         update.message.reply_text("🤖 Bot ativo! Digite /start no privado para opções.")
 
-# ... (Adicione aqui TODAS as outras funções do seu bot originais)
-# Incluindo: is_bot_admin, add_group_admin, add_verified_user, 
-# remove_verified_user, remove_group_admin, get_user_by_username,
-# button_handler, handle_text_input, handle_verification_keywords,
-# handle_new_member, error_handler
+def button_handler(update: Update, context: CallbackContext) -> None:
+    """Lida com cliques nos botões inline."""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == 'be_verified':
+        response = (
+            "📌 Para se tornar uma VERIFICADA, siga estes passos:\n\n"
+            "1. Grave um vídeo e poste no canal @KScanal\n"
+            "2. No vídeo, diga a frase:\n"
+            "\"Sou [seu nome] e eu quero ser uma Verificada na KS Entretenimento\"\n"
+            "3. Inclua uma prévia do seu conteúdo\n\n"
+            "⏳ Em breve algum administrador avaliará sua solicitação!"
+        )
+        query.edit_message_text(text=response)
+    
+    elif query.data == 'about_admins':
+        response = (
+            "👑 Sobre administradores:\n\n"
+            "Se você é administrador de algum grupo da KS Entretenimento, "
+            "entre em contato com @KarolzinhaSapeca para configurar "
+            "suas permissões de administrador."
+        )
+        query.edit_message_text(text=response)
+    
+    elif query.data == 'admin_add_verified':
+        context.user_data['action'] = 'add_verified'
+        query.edit_message_text(
+            text="🔹 Digite o @username da conta que deseja adicionar como Verificada:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Cancelar", callback_data='cancel_action')]])
+        )
+    
+    elif query.data == 'admin_remove_verified':
+        context.user_data['action'] = 'remove_verified'
+        query.edit_message_text(
+            text="🔹 Digite o @username da conta que deseja remover das Verificadas:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Cancelar", callback_data='cancel_action')]])
+        )
+    
+    elif query.data == 'cancel_action':
+        if 'action' in context.user_data:
+            del context.user_data['action']
+        query.edit_message_text("❌ Ação cancelada.")
+
+def handle_text_input(update: Update, context: CallbackContext) -> None:
+    """Lida com entradas de texto após seleção de ações."""
+    if update.effective_chat.type != "private" or 'action' not in context.user_data:
+        return
+    
+    user_id = update.effective_user.id
+    if not is_bot_admin(user_id):
+        update.message.reply_text("❌ Você não tem permissão para executar esta ação.")
+        return
+    
+    text = update.message.text.strip()
+    action = context.user_data['action']
+    
+    if action == 'add_verified':
+        if not text.startswith('@'):
+            update.message.reply_text("❌ Por favor, insira um @username válido (começando com @).")
+            return
+        
+        username = text[1:] if text.startswith('@') else text
+        try:
+            user = context.bot.get_chat(username)
+            if add_verified_user(user.id, user.username or '', user.full_name or ''):
+                update.message.reply_text(f"✅ {user.full_name} adicionado como verificado!")
+            else:
+                update.message.reply_text("⚠️ Usuário já verificado")
+        except TelegramError:
+            update.message.reply_text("❌ Usuário não encontrado")
+        
+        del context.user_data['action']
+
+def add_verified_user(user_id: int, username: str, full_name: str) -> bool:
+    """Adiciona um usuário verificado."""
+    try:
+        with db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO verified_users (user_id, username, full_name, status) 
+                VALUES (%s, %s, %s, 'approved') 
+                ON CONFLICT (user_id) DO UPDATE 
+                SET status = 'approved'""",
+                (user_id, username, full_name)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Erro ao adicionar usuário verificado: {e}")
+        return False
+
+def handle_new_member(update: Update, context: CallbackContext) -> None:
+    """Lida com novos membros no grupo."""
+    if not update.chat_member or not update.chat_member.new_chat_members:
+        return
+
+    chat_id = update.effective_chat.id
+    for member in update.chat_member.new_chat_members:
+        user_id = member.id
+        
+        # Verifica se é um usuário verificado
+        try:
+            with db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM verified_users WHERE user_id = %s AND status = 'approved'",
+                    (user_id,)
+                )
+                is_verified = cur.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Erro ao verificar usuário verificado: {e}")
+            is_verified = False
+
+        if is_verified:
+            try:
+                context.bot.set_chat_administrator_custom_title(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    custom_title="Verificada"
+                )
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"👋 Bem-vindo {member.full_name}! Esta é uma conta verificada."
+                )
+            except TelegramError as e:
+                logger.error(f"Erro ao promover verificado: {e}")
+
+def error_handler(update: Update, context: CallbackContext) -> None:
+    """Lida com erros de forma segura."""
+    try:
+        error = context.error
+        logger.error(f'Erro não tratado: {error}', exc_info=error)
+        
+        if isinstance(error, Conflict):
+            logger.warning("Conflito detectado - outra instância em execução")
+            
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            update.effective_message.reply_text("❌ Ocorreu um erro ao processar seu comando.")
+    except Exception as e:
+        logger.error(f'Erro no manipulador de erros: {e}')
 
 # ==============================================
 # SOLUÇÕES PARA O RENDER
@@ -253,7 +396,7 @@ def start_polling_safely(updater: Updater):
                 drop_pending_updates=True,
                 timeout=30,
                 allowed_updates=['message', 'callback_query', 'chat_member'],
-                bootstrap_retries=0,
+                bootstrap_retries=-1,  # Corrigido: valor compatível
                 clean=True
             )
             logger.info("Bot iniciado via polling")
@@ -292,14 +435,13 @@ def main() -> None:
         init_db()
         setup_admin_users()
         
-        # Configuração do Updater
+        # Configuração do Updater (removido pool_timeout que causava erro)
         updater = Updater(
             token=token,
             use_context=True,
             request_kwargs={
                 'read_timeout': 30,
-                'connect_timeout': 30,
-                'pool_timeout': 30
+                'connect_timeout': 30
             }
         )
         
