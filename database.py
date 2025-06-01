@@ -1,13 +1,11 @@
 import os
 import psycopg2
 from psycopg2 import sql
-
-# Configuração do banco de dados
-DATABASE_URL = os.getenv("DATABASE_URL")
+from datetime import datetime
 
 def get_connection():
     """Retorna uma conexão com o banco de dados"""
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 def init_db():
     """Inicializa o banco de dados com as tabelas necessárias"""
@@ -113,9 +111,28 @@ def is_user_verified(username: str) -> bool:
         if conn is not None:
             conn.close()
 
+def get_verified_users():
+    """Retorna todos os usuários verificados"""
+    sql_query = "SELECT username FROM verified_users ORDER BY added_at DESC"
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(sql_query)
+        users = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return users
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+
 def get_all_groups():
     """Retorna todos os grupos cadastrados"""
-    sql_query = "SELECT chat_id FROM groups"
+    sql_query = "SELECT chat_id FROM groups ORDER BY added_at DESC"
     
     conn = None
     try:
@@ -174,6 +191,25 @@ def remove_group(chat_id: str):
         if conn is not None:
             conn.close()
 
+def is_group_registered(chat_id: str) -> bool:
+    """Verifica se um grupo está registrado"""
+    sql_query = "SELECT 1 FROM groups WHERE chat_id = %s"
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(sql_query, (chat_id,))
+        result = cur.fetchone() is not None
+        cur.close()
+        return result
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
 def get_source_channel():
     """Retorna o ID do canal de origem"""
     sql_query = "SELECT channel_id FROM source_channel LIMIT 1"
@@ -216,3 +252,6 @@ def set_source_channel(channel_id: str):
     finally:
         if conn is not None:
             conn.close()
+
+if __name__ == "__main__":
+    init_db()
