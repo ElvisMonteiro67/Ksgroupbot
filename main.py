@@ -150,7 +150,7 @@ class ForwardBot:
 
 if __name__ == "__main__":
     # Substitua pelo token do seu bot
-    TOKEN = "SEU_TOKEN_AQUI"
+    TOKEN = "7589679491:AAFwPkgGzhy0XC-b1fOvFfyWQqq9K0m86vs"
     
     bot = ForwardBot(TOKEN)
     bot.run()
