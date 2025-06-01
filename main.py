@@ -31,7 +31,8 @@ ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if 
 
 # Configuração de logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ async def manage_groups(query):
     
     keyboard = [
         [InlineKeyboardButton("Adicionar Grupo Manualmente", callback_data="admin_add_group")],
-        [InlineKeyboardButton("Listar e Adicionar Todos os Grupos", callback_data="admin_list_groups")],
+        [InlineKeyboardButton("Listar Grupos Disponíveis", callback_data="admin_list_groups")],
         [InlineKeyboardButton("Remover Grupo", callback_data="admin_remove_group")],
         [InlineKeyboardButton("Voltar", callback_data="admin")]
     ]
@@ -185,18 +186,22 @@ async def handle_admin_list_groups(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     
     try:
-        # Obter todos os chats onde o bot está presente
-        groups = []
-        async for chat in context.bot.get_chat_member_chats():
-            if chat.type in ['group', 'supergroup']:
-                chat_id = str(chat.id)
-                chat_title = chat.title or chat_id
-                if not is_group_registered(chat_id):
-                    groups.append((chat_id, chat_title))
+        # Solução alternativa para listar chats
+        updates = await context.bot.get_updates(limit=100)
+        groups = set()
+        
+        for update in updates:
+            if hasattr(update, 'message') and update.message:
+                chat = update.message.chat
+                if chat.type in ['group', 'supergroup']:
+                    chat_id = str(chat.id)
+                    if not is_group_registered(chat_id):
+                        groups.add((chat_id, chat.title or chat_id))
         
         if not groups:
             await query.edit_message_text(
-                "Não foram encontrados novos grupos para adicionar.",
+                "Não foram encontrados novos grupos para adicionar. "
+                "Certifique-se de que o bot está nos grupos e há mensagens recentes.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
                 ])
@@ -210,7 +215,7 @@ async def handle_admin_list_groups(update: Update, context: ContextTypes.DEFAULT
                 added_count += 1
         
         await query.edit_message_text(
-            f"✅ Foram adicionados {added_count} novos grupos automaticamente!\n\n"
+            f"✅ Foram adicionados {added_count} novos grupos!\n\n"
             f"Grupos adicionados:\n" + "\n".join([f"🔹 {title} (ID: {id})" for id, title in groups]),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
@@ -220,7 +225,8 @@ async def handle_admin_list_groups(update: Update, context: ContextTypes.DEFAULT
     except Exception as e:
         logger.error(f"Erro ao listar grupos: {e}")
         await query.edit_message_text(
-            "❌ Ocorreu um erro ao listar os grupos. Certifique-se de que o bot é administrador nos grupos.",
+            "❌ Ocorreu um erro ao listar os grupos. "
+            "Certifique-se de que o bot é administrador nos grupos.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Voltar", callback_data="admin_manage_groups")]
             ])
@@ -435,106 +441,117 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if source_channel and groups:
             try:
                 # Encaminha para o canal
-                await context.bot.forward_message(
-                    chat_id=source_channel,
-                    from_chat_id=update.message.chat_id,
-                    message_id=update.message.message_id
-                )
-                
-                # Encaminha para todos os grupos com botão de origem
-                for group in groups:
-                    try:
-                        forwarded_msg = await context.bot.forward_message(
-                            chat_id=group,
-                            from_chat_id=update.message.chat_id,
-                            message_id=update.message.message_id
-                        )
-                        
-                        # Adiciona botão com o canal de origem
-                        keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Fonte", url=f"https://t.me/{context.bot.get_chat(source_channel).username}")]
-                        ])
-                        
-                        await context.bot.send_message(
-                            chat_id=group,
-                            text="🔍 Fonte da publicação:",
-                            reply_to_message_id=forwarded_msg.message_id,
-                            reply_markup=keyboard
-                        )
-                    except Exception as e:
-                        logger.error(f"Erro ao enviar para grupo {group}: {e}")
-                
-                await update.message.reply_text(
-                    "✅ Sua publicação foi compartilhada com sucesso!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Voltar", callback_data="back")]
+                await context
+            await context.bot.forward_message(
+                chat_id=source_channel,
+                from_chat_id=update.message.chat_id,
+                message_id=update.message.message_id
+            )
+            
+            # Encaminha para todos os grupos com botão de origem
+            for group in groups:
+                try:
+                    forwarded_msg = await context.bot.forward_message(
+                        chat_id=group,
+                        from_chat_id=update.message.chat_id,
+                        message_id=update.message.message_id
+                    )
+                    
+                    # Adiciona botão com o canal de origem
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Fonte", url=f"https://t.me/{context.bot.get_chat(source_channel).username}")]
                     ])
-                )
-            except Exception as e:
-                logger.error(f"Erro ao encaminhar mensagem: {e}")
-                await update.message.reply_text(
-                    "❌ Ocorreu um erro ao compartilhar sua publicação.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Voltar", callback_data="back")]
-                    ])
-                )
-        else:
+                    
+                    await context.bot.send_message(
+                        chat_id=group,
+                        text="🔍 Fonte da publicação:",
+                        reply_to_message_id=forwarded_msg.message_id,
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao enviar para grupo {group}: {e}")
+            
             await update.message.reply_text(
-                "❌ Canal de origem ou grupos não configurados.",
+                "✅ Sua publicação foi compartilhada com sucesso!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Voltar", callback_data="back")]
                 ])
             )
-        
-        user_data["awaiting_forward"] = False
-    
-    elif user_data.get("admin_action"):
-        await handle_admin_text_input(update, context)
-    
-    elif update.message.chat.type == "private" and not user_data.get("awaiting_forward"):
-        await start(update, context)
-
-async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manipula novas postagens no canal de origem"""
-    source_channel = get_source_channel()
-    if update.channel_post and update.channel_post.chat.id == source_channel:
-        groups = get_all_groups()
-        
-        for group in groups:
-            try:
-                forwarded_msg = await context.bot.forward_message(
-                    chat_id=group,
-                    from_chat_id=source_channel,
-                    message_id=update.channel_post.message_id
-                )
-                
-                # Adiciona botão com o canal de origem
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Fonte", url=f"https://t.me/{context.bot.get_chat(source_channel).username}")]
+        except Exception as e:
+            logger.error(f"Erro ao encaminhar mensagem: {e}")
+            await update.message.reply_text(
+                "❌ Ocorreu um erro ao compartilhar sua publicação.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Voltar", callback_data="back")]
                 ])
-                
-                await context.bot.send_message(
-                    chat_id=group,
-                    text="🔍 Fonte da publicação:",
-                    reply_to_message_id=forwarded_msg.message_id,
-                    reply_markup=keyboard
-                )
-            except Exception as e:
-                logger.error(f"Erro ao encaminhar para grupo {group}: {e}")
+            )
+    else:
+        await update.message.reply_text(
+            "❌ Canal de origem ou grupos não configurados.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Voltar", callback_data="back")]
+            ])
+        )
+    
+    user_data["awaiting_forward"] = False
 
-def main():
-    """Inicia o bot"""
-    application = Application.builder().token(TOKEN).build()
-    
-    # Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-    application.add_handler(MessageHandler(filters.FORWARDED, handle_messages))
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
-    
-    # Inicia o bot
+elif user_data.get("admin_action"):
+    await handle_admin_text_input(update, context)
+
+elif update.message.chat.type == "private" and not user_data.get("awaiting_forward"):
+    await start(update, context)
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+"""Manipula novas postagens no canal de origem"""
+source_channel = get_source_channel()
+if update.channel_post and update.channel_post.chat.id == source_channel:
+groups = get_all_groups()
+    for group in groups:
+        try:
+            forwarded_msg = await context.bot.forward_message(
+                chat_id=group,
+                from_chat_id=source_channel,
+                message_id=update.channel_post.message_id
+            )
+            
+            # Adiciona botão com o canal de origem
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Fonte", url=f"https://t.me/{context.bot.get_chat(source_channel).username}")]
+            ])
+            
+            await context.bot.send_message(
+                chat_id=group,
+                text="🔍 Fonte da publicação:",
+                reply_to_message_id=forwarded_msg.message_id,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Erro ao encaminhar para grupo {group}: {e}")
+def start_webhook():
+"""Configuração para Render com webhook"""
+application = Application.builder().token(TOKEN).build()
+# Configura os handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(button_handler))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+application.add_handler(MessageHandler(filters.FORWARDED, handle_messages))
+application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
+
+# Configuração para Render
+PORT = int(os.environ.get('PORT', 5000))
+APPLICATION_URL = os.environ.get('APPLICATION_URL', '')
+
+if APPLICATION_URL:
+    # Modo webhook para produção
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{APPLICATION_URL}/{TOKEN}",
+        drop_pending_updates=True
+    )
+else:
+    # Modo polling para desenvolvimento
     application.run_polling()
+if name == "main":
+start_webhook()
 
-if __name__ == "__main__":
-    main()
