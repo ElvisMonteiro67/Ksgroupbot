@@ -70,6 +70,7 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📌 *Grupos onde sou administrador:*\n\n" + 
                 "\n".join(group_list) + 
                 "\n\nTotal: " + str(len(group_list)) + " grupos"
+            )
             await update.message.reply_text(
                 response,
                 parse_mode=ParseMode.MARKDOWN
