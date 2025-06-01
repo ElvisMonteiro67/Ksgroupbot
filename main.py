@@ -6,23 +6,25 @@ from telegram import (
     InlineKeyboardMarkup
 )
 from telegram.ext import (
-    Updater, 
+    Application,
     CommandHandler, 
     MessageHandler, 
     CallbackContext, 
     CallbackQueryHandler, 
     ConversationHandler,
-    filters
+    filters,
+    ContextTypes
 )
 from sqlalchemy import create_engine, Column, Integer, String, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from threading import Lock
+from queue import Queue
 
 # ==================================================
 # CONFIGURAÇÃO INICIAL
 # ==================================================
 
-# Configuração de logging detalhada para o Render
+# Configuração de logging detalhada
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -32,12 +34,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Variáveis de ambiente (configuradas no Render)
-DATABASE_URL = os.getenv("DATABASE_URL")  # Render fornece automaticamente para PostgreSQL
+# Variáveis de ambiente
+DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_ADMIN_ID = int(os.getenv("BOT_ADMIN_ID", "0"))  # ID do admin como número
+BOT_ADMIN_ID = int(os.getenv("BOT_ADMIN_ID", "0"))
 
-# Configuração do SQLAlchemy otimizada para Render
+# Configuração do SQLAlchemy
 engine = create_engine(
     DATABASE_URL,
     pool_size=5,
@@ -53,7 +55,7 @@ Session = scoped_session(session_factory)
 # Lock para operações de banco de dados
 db_lock = Lock()
 
-# Base declarativa atualizada para SQLAlchemy 2.0
+# Base declarativa
 Base = declarative_base()
 
 class UserRole(Base):
@@ -64,11 +66,11 @@ class UserRole(Base):
     role = Column(String, nullable=False)  # "admin" ou "verified"
 
 # ==================================================
-# FUNÇÕES AUXILIARES E DE BANCO DE DADOS
+# FUNÇÕES AUXILIARES
 # ==================================================
 
 def init_db():
-    """Inicializa o banco de dados criando as tabelas se não existirem"""
+    """Inicializa o banco de dados"""
     try:
         with db_lock:
             Base.metadata.create_all(engine)
@@ -78,49 +80,42 @@ def init_db():
         raise
 
 # ==================================================
-# COMANDOS PÚBLICOS E MENSAGENS DE AJUDA
+# COMANDOS PÚBLICOS
 # ==================================================
 
-def start(update: Update, context: CallbackContext):
-    """Mensagem de boas-vindas e explicação do bot"""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mensagem de boas-vindas"""
     help_text = """
     🤖 *Bot de Gerenciamento de Grupos* 🤖
 
-    *Para administradores:*
-    /addgroupadmin @username - Adiciona um admin
-    /addverified @username - Adiciona uma verificada
-    /manage - Menu interativo (no privado)
-
-    *Funcionalidades:*
-    - Promove automaticamente usuários da lista de admins
-    - Define título "Verificada" para usuárias verificadas
+    *Comandos disponíveis:*
+    /addgroupadmin @username - Adiciona admin
+    /addverified @username - Adiciona verificada
+    /manage - Menu interativo (privado)
+    /help - Ajuda detalhada
     """
-    update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
-def help_command(update: Update, context: CallbackContext):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Exibe ajuda detalhada"""
     help_text = """
     📚 *Ajuda do Bot* 📚
 
-    *Comandos disponíveis:*
-    
-    👨‍💻 *No grupo:*
-    /addgroupadmin @username - Adiciona administrador
-    /addverified @username - Adiciona verificada
-
-    🔒 *No privado (apenas admin):*
-    /manage - Menu interativo
+    *Comandos:*
+    - /addgroupadmin @username - Adiciona administrador
+    - /addverified @username - Adiciona verificada
+    - /manage - Menu interativo (apenas admin)
     """
-    update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 # ==================================================
-# FUNÇÕES DE GERENCIAMENTO DE USUÁRIOS
+# GERENCIAMENTO DE USUÁRIOS
 # ==================================================
 
-def add_user_to_list(update: Update, context: CallbackContext, role: str):
-    """Adiciona um usuário à lista especificada"""
+async def add_user_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str):
+    """Adiciona usuário à lista"""
     if update.effective_user.id != BOT_ADMIN_ID:
-        update.message.reply_text("❌ Sem permissão.")
+        await update.message.reply_text("❌ Sem permissão.")
         return
 
     try:
@@ -132,7 +127,7 @@ def add_user_to_list(update: Update, context: CallbackContext, role: str):
             username = context.args[0].lstrip('@').lower()
             user_id = 0
         else:
-            update.message.reply_text("ℹ️ Use respondendo ou com @username.")
+            await update.message.reply_text("ℹ️ Use respondendo ou com @username.")
             return
 
         with db_lock:
@@ -143,7 +138,7 @@ def add_user_to_list(update: Update, context: CallbackContext, role: str):
             ).first()
 
             if existing:
-                update.message.reply_text("ℹ️ Já está na lista.")
+                await update.message.reply_text("ℹ️ Já está na lista.")
                 return
 
             new_entry = UserRole(
@@ -155,28 +150,28 @@ def add_user_to_list(update: Update, context: CallbackContext, role: str):
             session.commit()
 
         role_name = "administrador" if role == "admin" else "verificada"
-        update.message.reply_text(f"✅ @{username} adicionado(a) como {role_name}!")
+        await update.message.reply_text(f"✅ @{username} adicionado(a) como {role_name}!")
 
     except Exception as e:
         logger.error(f"Erro em add_user_to_list: {e}")
-        update.message.reply_text("❌ Erro ao processar.")
+        await update.message.reply_text("❌ Erro ao processar.")
     finally:
         Session.remove()
 
-def add_group_admin(update: Update, context: CallbackContext):
-    """Adiciona um administrador"""
-    add_user_to_list(update, context, "admin")
+async def add_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Adiciona administrador"""
+    await add_user_to_list(update, context, "admin")
 
-def add_verified(update: Update, context: CallbackContext):
-    """Adiciona uma usuária verificada"""
-    add_user_to_list(update, context, "verified")
+async def add_verified(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Adiciona verificada"""
+    await add_user_to_list(update, context, "verified")
 
 # ==================================================
 # GERENCIAMENTO DE NOVOS MEMBROS
 # ==================================================
 
-def new_member_check(update: Update, context: CallbackContext):
-    """Verifica novos membros e aplica permissões"""
+async def new_member_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Verifica novos membros"""
     if not update.message or not update.message.new_chat_members:
         return
 
@@ -199,17 +194,17 @@ def new_member_check(update: Update, context: CallbackContext):
                 Session.remove()
 
             if is_admin:
-                promote_to_admin(context, update.effective_chat.id, user_id, username)
+                await promote_to_admin(context, update.effective_chat.id, user_id, username)
             elif is_verified:
-                verify_user(context, update.effective_chat.id, user_id, username)
+                await verify_user(context, update.effective_chat.id, user_id, username)
 
     except Exception as e:
         logger.error(f"Erro em new_member_check: {e}")
 
-def promote_to_admin(context: CallbackContext, chat_id: int, user_id: int, username: str):
-    """Promove um usuário a administrador"""
+async def promote_to_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, username: str):
+    """Promove a administrador"""
     try:
-        context.bot.promote_chat_member(
+        await context.bot.promote_chat_member(
             chat_id=chat_id,
             user_id=user_id,
             can_change_info=True,
@@ -222,17 +217,17 @@ def promote_to_admin(context: CallbackContext, chat_id: int, user_id: int, usern
             can_promote_members=True,
             is_anonymous=False
         )
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id,
             text=f"👑 Bem-vindo admin @{username}!"
         )
     except Exception as e:
         logger.error(f"Erro ao promover admin: {e}")
 
-def verify_user(context: CallbackContext, chat_id: int, user_id: int, username: str):
-    """Define um usuário como verificado"""
+async def verify_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, username: str):
+    """Define como verificado"""
     try:
-        context.bot.promote_chat_member(
+        await context.bot.promote_chat_member(
             chat_id=chat_id,
             user_id=user_id,
             can_change_info=False,
@@ -245,12 +240,12 @@ def verify_user(context: CallbackContext, chat_id: int, user_id: int, username: 
             can_promote_members=False,
             is_anonymous=True
         )
-        context.bot.set_chat_administrator_custom_title(
+        await context.bot.set_chat_administrator_custom_title(
             chat_id=chat_id,
             user_id=user_id,
             custom_title="Verificada"
         )
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=chat_id,
             text=f"🌸 Bem-vinda @{username}!"
         )
@@ -258,15 +253,15 @@ def verify_user(context: CallbackContext, chat_id: int, user_id: int, username: 
         logger.error(f"Erro ao verificar usuário: {e}")
 
 # ==================================================
-# INTERFACE INTERATIVA DE GERENCIAMENTO
+# INTERFACE INTERATIVA
 # ==================================================
 
 CHOOSING_ACTION, WAITING_FOR_USERNAME = range(2)
 
-def manage(update: Update, context: CallbackContext) -> int:
-    """Inicia o menu interativo"""
+async def manage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Inicia menu interativo"""
     if update.effective_user.id != BOT_ADMIN_ID:
-        update.message.reply_text("❌ Acesso restrito.")
+        await update.message.reply_text("❌ Acesso restrito.")
         return ConversationHandler.END
 
     keyboard = [
@@ -275,36 +270,36 @@ def manage(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton("❌ Cancelar", callback_data='cancel')]
     ]
     
-    update.message.reply_text(
+    await update.message.reply_text(
         "🔧 Menu de Gerenciamento:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CHOOSING_ACTION
 
-def action_choice(update: Update, context: CallbackContext) -> int:
-    """Processa a seleção do menu"""
+async def action_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Processa seleção do menu"""
     query = update.callback_query
-    query.answer()
+    await query.answer()
 
     if query.data == 'add_admin':
         context.user_data['target_role'] = "admin"
-        query.edit_message_text("👨‍💻 Envie o @username ou encaminhe uma mensagem:")
+        await query.edit_message_text("👨‍💻 Envie o @username ou encaminhe uma mensagem:")
         return WAITING_FOR_USERNAME
         
     elif query.data == 'add_verified':
         context.user_data['target_role'] = "verified"
-        query.edit_message_text("🌸 Envie o @username ou encaminhe uma mensagem:")
+        await query.edit_message_text("🌸 Envie o @username ou encaminhe uma mensagem:")
         return WAITING_FOR_USERNAME
         
     else:
-        query.edit_message_text("❌ Operação cancelada.")
+        await query.edit_message_text("❌ Operação cancelada.")
         return ConversationHandler.END
 
-def process_username(update: Update, context: CallbackContext) -> int:
-    """Processa o username recebido"""
+async def process_username(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Processa username recebido"""
     role = context.user_data.get('target_role')
     if not role:
-        update.message.reply_text("❌ Erro.")
+        await update.message.reply_text("❌ Erro.")
         return ConversationHandler.END
 
     try:
@@ -324,7 +319,7 @@ def process_username(update: Update, context: CallbackContext) -> int:
             ).first()
 
             if existing:
-                update.message.reply_text("ℹ️ Já está na lista.")
+                await update.message.reply_text("ℹ️ Já está na lista.")
                 return ConversationHandler.END
 
             new_entry = UserRole(
@@ -336,28 +331,28 @@ def process_username(update: Update, context: CallbackContext) -> int:
             session.commit()
 
         role_name = "administrador" if role == "admin" else "verificada"
-        update.message.reply_text(f"✅ @{username} adicionado(a) como {role_name}!")
+        await update.message.reply_text(f"✅ @{username} adicionado(a) como {role_name}!")
         
         return ConversationHandler.END
 
     except Exception as e:
         logger.error(f"Erro em process_username: {e}")
-        update.message.reply_text("❌ Ocorreu um erro.")
+        await update.message.reply_text("❌ Ocorreu um erro.")
         return ConversationHandler.END
     finally:
         Session.remove()
 
-def cancel_operation(update: Update, context: CallbackContext) -> int:
-    """Cancela a operação"""
-    update.message.reply_text("❌ Operação cancelada.")
+async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancela operação"""
+    await update.message.reply_text("❌ Operação cancelada.")
     return ConversationHandler.END
 
 # ==================================================
-# CONFIGURAÇÃO PRINCIPAL DO BOT
+# CONFIGURAÇÃO PRINCIPAL
 # ==================================================
 
 def main():
-    """Função principal que configura e inicia o bot"""
+    """Função principal"""
     try:
         init_db()
         logger.info("Banco de dados inicializado.")
@@ -365,24 +360,22 @@ def main():
         logger.error(f"Falha ao inicializar banco de dados: {e}")
         return
 
-    # Configura o updater para a versão atual da biblioteca
-    updater = Updater(BOT_TOKEN)
-
-    dp = updater.dispatcher
+    # Cria a aplicação
+    application = Application.builder().token(BOT_TOKEN).build()
 
     # Adiciona os handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(CommandHandler("addgroupadmin", add_group_admin))
-    dp.add_handler(CommandHandler("addverified", add_verified))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("addgroupadmin", add_group_admin))
+    application.add_handler(CommandHandler("addverified", add_verified))
     
     # Handler para novos membros
-    dp.add_handler(MessageHandler(
+    application.add_handler(MessageHandler(
         filters.StatusUpdate.NEW_CHAT_MEMBERS,
         new_member_check
     ))
 
-    # Conversa interativa para gerenciamento
+    # Conversa interativa
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("manage", manage)],
         states={
@@ -394,17 +387,10 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_operation)],
         allow_reentry=True
     )
-    dp.add_handler(conv_handler)
+    application.add_handler(conv_handler)
 
     # Inicia o bot
-    try:
-        updater.start_polling()
-        logger.info("🤖 Bot iniciado com sucesso!")
-        updater.idle()
-    except Exception as e:
-        logger.error(f"Falha ao iniciar o bot: {e}")
-    finally:
-        Session.remove()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
